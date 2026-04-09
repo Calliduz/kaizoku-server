@@ -17,7 +17,11 @@ const getAll = asyncHandler(async (req, res) => {
   const filter = {};
 
   if (req.query.search) {
-    filter.$text = { $search: req.query.search };
+    const searchRegex = new RegExp(req.query.search.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i');
+    filter.$or = [
+      { title: searchRegex },
+      { altTitles: searchRegex }
+    ];
   }
 
   if (req.query.genre) {
@@ -28,9 +32,26 @@ const getAll = asyncHandler(async (req, res) => {
     filter.status = req.query.status.toUpperCase();
   }
 
+  if (req.query.format) {
+    filter.format = req.query.format.toUpperCase();
+  }
+
+  // Determine standard tie-breakers logically prioritizing Main Series
+  let sortConfig = { _id: -1 };
+  
+  if (req.query.search) {
+    // If searching, strongly favor length, popularity, and rating
+    sortConfig = { totalEpisodes: -1, popularity: -1, rating: -1 };
+  } else if (req.query.sort) {
+    if (req.query.sort === 'rating') sortConfig = { rating: -1, totalEpisodes: -1 };
+    else if (req.query.sort === 'popular') sortConfig = { popularity: -1, rating: -1 };
+    else if (req.query.sort === 'newest') sortConfig = { _id: -1 };
+    else sortConfig = { _id: -1 };
+  }
+
   const [anime, total] = await Promise.all([
     Anime.find(filter)
-      .sort(req.query.search ? { score: { $meta: 'textScore' } } : { _id: -1 })
+      .sort(sortConfig)
       .skip(skip)
       .limit(limit)
       .lean(),
