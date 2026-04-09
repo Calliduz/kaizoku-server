@@ -3,6 +3,7 @@ const Episode = require("../models/Episode");
 const { searchAniList, normalizeAniListData } = require("./anilist");
 const { findBestMatch } = require("./matcher");
 const logger = require("../utils/logger");
+const fuzzball = require("fuzzball");
 
 // ── Registered source modules ──────────────────────────────
 // Add new sources here after creating them in ./sources/
@@ -70,9 +71,13 @@ async function scrape(query, options = {}) {
           ...(match ? normalizeAniListData(match) : {}),
         };
 
-        // Step 4: Upsert into MongoDB (by sourceId + scrapeSource)
+        // Step 4: Upsert into MongoDB (prefer anilistId lookup to merge with Offline DB)
+        const filter = match && match.id 
+          ? { anilistId: match.id } 
+          : { sourceId: item.sourceId, scrapeSource: source.name };
+
         const anime = await Anime.findOneAndUpdate(
-          { sourceId: item.sourceId, scrapeSource: source.name },
+          filter,
           { $set: animeData },
           { upsert: true, new: true, runValidators: true },
         );
@@ -142,8 +147,12 @@ async function scrapeCatalog(options = {}) {
           ...(match ? normalizeAniListData(match) : {}),
         };
 
+        const filter = match && match.id 
+          ? { anilistId: match.id } 
+          : { sourceId: item.sourceId, scrapeSource: source.name };
+
         const anime = await Anime.findOneAndUpdate(
-          { sourceId: item.sourceId, scrapeSource: source.name },
+          filter,
           { $set: animeData },
           { upsert: true, new: true, runValidators: true },
         );
@@ -258,6 +267,57 @@ async function fetchEpisodeSources(episodeId) {
 }
 
 /**
+ * Lazy load / cross-reference an anime that has no scraping source.
+ * Called when an anime is clicked but has no episodes (seeded from AOD).
+ *
+ * @param {string} animeId - MongoDB Anime _id
+ */
+async function linkAndFetchEpisodes(animeId) {
+  const anime = await Anime.findById(animeId);
+  if (!anime || (anime.sourceId && anime.scrapeSource)) return;
+
+  logger.info(`[Engine] Lazy-loading episodes for ${anime.title} (Anilist ID: ${anime.anilistId})`);
+  
+  // Try all sources
+  for (const source of SOURCES) {
+    try {
+      const searchResults = await source.searchAnime(anime.title);
+      if (!searchResults || searchResults.length === 0) continue;
+
+      let bestItem = null;
+      let highestScore = 0;
+      
+      const targetTitles = [anime.title, ...(anime.altTitles || [])].filter(Boolean);
+
+      // Local heuristic fuzzy match: avoids 15 seconds of AniList GraphQL requests
+      for (const item of searchResults) {
+        for (const target of targetTitles) {
+          const score = Math.max(
+            fuzzball.ratio(item.title.toLowerCase(), target.toLowerCase()),
+            fuzzball.partial_ratio(item.title.toLowerCase(), target.toLowerCase())
+          );
+          if (score > highestScore) {
+            highestScore = score;
+            bestItem = item;
+          }
+        }
+      }
+
+      if (bestItem && highestScore > 70) {
+        logger.info(`[Engine] Matched "${anime.title}" to source "${bestItem.title}" with score ${highestScore}`);
+        anime.sourceId = bestItem.sourceId;
+        anime.scrapeSource = source.name;
+        await anime.save();
+        await scrapeEpisodes(anime._id, bestItem.url, source);
+        return;
+      }
+    } catch (error) {
+      logger.error(`[Engine] Lazy load failed for source ${source.name}: ${error.message}`);
+    }
+  }
+}
+
+/**
  * CLI entry point — run directly via `npm run scrape`
  */
 async function runScrape() {
@@ -289,5 +349,6 @@ module.exports = {
   scrapeCatalog,
   scrapeEpisodes,
   fetchEpisodeSources,
+  linkAndFetchEpisodes,
   runScrape,
 };

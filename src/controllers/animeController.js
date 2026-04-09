@@ -1,6 +1,6 @@
 const Anime = require('../models/Anime');
 const Episode = require('../models/Episode');
-const { scrape, fetchEpisodeSources } = require('../scrapers/engine');
+const { scrape, fetchEpisodeSources, linkAndFetchEpisodes } = require('../scrapers/engine');
 const asyncHandler = require('../middleware/asyncHandler');
 
 /**
@@ -30,7 +30,7 @@ const getAll = asyncHandler(async (req, res) => {
 
   const [anime, total] = await Promise.all([
     Anime.find(filter)
-      .sort(req.query.search ? { score: { $meta: 'textScore' } } : { updatedAt: -1 })
+      .sort(req.query.search ? { score: { $meta: 'textScore' } } : { _id: -1 })
       .skip(skip)
       .limit(limit)
       .lean(),
@@ -70,9 +70,18 @@ const getById = asyncHandler(async (req, res) => {
  * @route   GET /api/anime/:id/episodes
  */
 const getEpisodes = asyncHandler(async (req, res) => {
-  const episodes = await Episode.find({ animeId: req.params.id })
+  let episodes = await Episode.find({ animeId: req.params.id })
     .sort({ number: 1 })
     .lean();
+
+  if (episodes.length === 0) {
+    // Lazy load the episodes dynamically using the Engine!
+    await linkAndFetchEpisodes(req.params.id);
+    // Re-fetch the newly inserted episodes
+    episodes = await Episode.find({ animeId: req.params.id })
+      .sort({ number: 1 })
+      .lean();
+  }
 
   res.json({ success: true, data: episodes });
 });
