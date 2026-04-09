@@ -4,6 +4,69 @@ const mongoose = require('mongoose');
  * Anime schema — stores series-level metadata.
  * Enriched with AniList data via the fuzzy matcher.
  */
+
+const voiceActorSchema = new mongoose.Schema(
+  {
+    id: Number,
+    name: { type: String, default: '' },
+    nameNative: { type: String, default: '' },
+    image: { type: String, default: '' },
+  },
+  { _id: false },
+);
+
+const characterSchema = new mongoose.Schema(
+  {
+    id: Number,
+    name: { type: String, default: '' },
+    nameNative: { type: String, default: '' },
+    image: { type: String, default: '' },
+    role: { type: String, default: 'SUPPORTING' }, // MAIN | SUPPORTING | BACKGROUND
+    gender: { type: String, default: null },
+    age: { type: String, default: null },
+    voiceActors: { type: [voiceActorSchema], default: [] },
+  },
+  { _id: false },
+);
+
+const studioSchema = new mongoose.Schema(
+  {
+    id: Number,
+    name: { type: String, default: '' },
+    isAnimationStudio: { type: Boolean, default: false },
+  },
+  { _id: false },
+);
+
+const trailerSchema = new mongoose.Schema(
+  {
+    id: { type: String, default: '' },
+    site: { type: String, default: '' }, // 'youtube' | 'dailymotion'
+    thumbnail: { type: String, default: '' },
+    url: { type: String, default: null },
+  },
+  { _id: false },
+);
+
+const externalLinkSchema = new mongoose.Schema(
+  {
+    url: { type: String, default: '' },
+    site: { type: String, default: '' },
+    type: { type: String, default: '' },
+  },
+  { _id: false },
+);
+
+const recommendationSchema = new mongoose.Schema(
+  {
+    id: Number,
+    title: { type: String, default: '' },
+    coverImage: { type: String, default: '' },
+    averageScore: { type: Number, default: 0 },
+  },
+  { _id: false },
+);
+
 const animeSchema = new mongoose.Schema(
   {
     title: {
@@ -29,6 +92,10 @@ const animeSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    coverColor: {
+      type: String,
+      default: null,
+    },
     bannerImage: {
       type: String,
       default: '',
@@ -41,14 +108,30 @@ const animeSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    tags: {
+      type: [String],
+      default: [],
+    },
     status: {
       type: String,
       enum: ['RELEASING', 'FINISHED', 'NOT_YET_RELEASED', 'CANCELLED', 'HIATUS', 'UNKNOWN'],
       default: 'UNKNOWN',
     },
+    format: {
+      type: String,
+      default: null, // TV | TV_SHORT | MOVIE | SPECIAL | OVA | ONA | MUSIC
+    },
+    source: {
+      type: String,
+      default: null, // ORIGINAL | MANGA | LIGHT_NOVEL | VISUAL_NOVEL | VIDEO_GAME | etc.
+    },
     totalEpisodes: {
       type: Number,
       default: 0,
+    },
+    episodeDuration: {
+      type: Number, // in minutes
+      default: null,
     },
     rating: {
       type: Number,
@@ -56,12 +139,72 @@ const animeSchema = new mongoose.Schema(
       min: 0,
       max: 100,
     },
+    meanScore: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100,
+    },
+    popularity: {
+      type: Number,
+      default: 0,
+    },
+    favourites: {
+      type: Number,
+      default: 0,
+    },
+    season: {
+      type: String,
+      default: null, // WINTER | SPRING | SUMMER | FALL
+    },
+    seasonYear: {
+      type: Number,
+      default: null,
+    },
+    startDate: {
+      type: String,
+      default: null,
+    },
+    endDate: {
+      type: String,
+      default: null,
+    },
+    nextAiringEpisode: {
+      episode: { type: Number, default: null },
+      airingAt: { type: String, default: null },
+      _id: false,
+    },
+    isAdult: {
+      type: Boolean,
+      default: false,
+    },
+    studios: {
+      type: [studioSchema],
+      default: [],
+    },
+    characters: {
+      type: [characterSchema],
+      default: [],
+    },
+    trailer: {
+      type: trailerSchema,
+      default: null,
+    },
+    externalLinks: {
+      type: [externalLinkSchema],
+      default: [],
+    },
+    recommendations: {
+      type: [recommendationSchema],
+      default: [],
+    },
+    // Source scrape metadata
     sourceId: {
       type: String,
       default: '',
       index: true,
     },
-    source: {
+    scrapeSource: {
       type: String,
       default: '',
     },

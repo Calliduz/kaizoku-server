@@ -20,7 +20,7 @@ const streamingSourceSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['hls', 'mp4', 'iframe', 'embed'],
+      enum: ['hls', 'mp4', 'webm', 'iframe', 'embed'],
       default: 'hls',
     },
   },

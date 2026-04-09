@@ -1,15 +1,22 @@
-const Anime = require('../models/Anime');
-const Episode = require('../models/Episode');
-const { searchAniList, normalizeAniListData } = require('./anilist');
-const { findBestMatch } = require('./matcher');
-const logger = require('../utils/logger');
+const Anime = require("../models/Anime");
+const Episode = require("../models/Episode");
+const { searchAniList, normalizeAniListData } = require("./anilist");
+const { findBestMatch } = require("./matcher");
+const logger = require("../utils/logger");
 
 // ── Registered source modules ──────────────────────────────
 // Add new sources here after creating them in ./sources/
-const gogoanime = require('./sources/gogoanime');
+const gogoanime = require("./sources/gogoanime");
 
 const SOURCES = [gogoanime];
 // ────────────────────────────────────────────────────────────
+
+function toSlug(value = "") {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
 
 /**
  * Scraper Engine — Orchestrator
@@ -37,7 +44,9 @@ async function scrape(query, options = {}) {
     ? SOURCES.filter((s) => sourceFilter.includes(s.name))
     : SOURCES;
 
-  logger.info(`[Engine] Scraping "${query}" across ${activeSources.length} source(s)...`);
+  logger.info(
+    `[Engine] Scraping "${query}" across ${activeSources.length} source(s)...`,
+  );
 
   const results = [];
 
@@ -54,17 +63,18 @@ async function scrape(query, options = {}) {
         // Step 3: Build the anime document
         const animeData = {
           title: item.title,
+          slug: toSlug(item.title),
           sourceId: item.sourceId,
-          source: source.name,
-          coverImage: item.image || '',
+          scrapeSource: source.name,
+          coverImage: item.image || "",
           ...(match ? normalizeAniListData(match) : {}),
         };
 
-        // Step 4: Upsert into MongoDB (by sourceId + source)
+        // Step 4: Upsert into MongoDB (by sourceId + scrapeSource)
         const anime = await Anime.findOneAndUpdate(
-          { sourceId: item.sourceId, source: source.name },
+          { sourceId: item.sourceId, scrapeSource: source.name },
           { $set: animeData },
-          { upsert: true, new: true, runValidators: true }
+          { upsert: true, new: true, runValidators: true },
         );
 
         logger.info(`[Engine] Upserted: ${anime.title} (${anime._id})`);
@@ -82,6 +92,78 @@ async function scrape(query, options = {}) {
   }
 
   logger.info(`[Engine] Scrape complete. ${results.length} anime processed.`);
+  return results;
+}
+
+/**
+ * Scrape catalog pages from each source to ingest many anime at once.
+ *
+ * @param {object} [options]
+ * @param {boolean} [options.fetchEpisodes=false] - Also scrape episode lists
+ * @param {string[]} [options.sourceFilter] - Only use these source names
+ * @param {number} [options.maxPages=25] - Max catalog pages per source
+ * @returns {Promise<Array>} Array of upserted anime documents
+ */
+async function scrapeCatalog(options = {}) {
+  const { fetchEpisodes = false, sourceFilter, maxPages = 25 } = options;
+
+  const activeSources = sourceFilter
+    ? SOURCES.filter((s) => sourceFilter.includes(s.name))
+    : SOURCES;
+
+  logger.info(
+    `[Engine] Catalog scrape across ${activeSources.length} source(s), maxPages=${maxPages}`,
+  );
+
+  const results = [];
+
+  for (const source of activeSources) {
+    if (typeof source.getCatalogAnime !== "function") {
+      logger.warn(
+        `[Engine] Source "${source.name}" has no getCatalogAnime(); skipping.`,
+      );
+      continue;
+    }
+
+    try {
+      const catalogItems = await source.getCatalogAnime(maxPages);
+
+      for (const item of catalogItems) {
+        // Keep AniList matching lightweight for full-catalog runs.
+        const anilistResults = await searchAniList(item.title);
+        const { match } = findBestMatch(item.title, anilistResults);
+
+        const animeData = {
+          title: item.title,
+          slug: toSlug(item.title),
+          sourceId: item.sourceId,
+          scrapeSource: source.name,
+          coverImage: item.image || "",
+          ...(match ? normalizeAniListData(match) : {}),
+        };
+
+        const anime = await Anime.findOneAndUpdate(
+          { sourceId: item.sourceId, scrapeSource: source.name },
+          { $set: animeData },
+          { upsert: true, new: true, runValidators: true },
+        );
+
+        if (fetchEpisodes && item.url) {
+          await scrapeEpisodes(anime._id, item.url, source);
+        }
+
+        results.push(anime);
+      }
+    } catch (error) {
+      logger.error(
+        `[Engine] Catalog scrape failed for "${source.name}": ${error.message}`,
+      );
+    }
+  }
+
+  logger.info(
+    `[Engine] Catalog scrape complete. ${results.length} anime processed.`,
+  );
   return results;
 }
 
@@ -104,16 +186,20 @@ async function scrapeEpisodes(animeId, animeUrl, source) {
             animeId,
             number: ep.number,
             title: ep.title || `Episode ${ep.number}`,
-            sourceEpisodeId: ep.sourceEpisodeId || '',
+            sourceEpisodeId: ep.sourceEpisodeId || "",
           },
         },
-        { upsert: true, new: true }
+        { upsert: true, new: true },
       );
     }
 
-    logger.info(`[Engine] Upserted ${episodes.length} episodes for anime ${animeId}`);
+    logger.info(
+      `[Engine] Upserted ${episodes.length} episodes for anime ${animeId}`,
+    );
   } catch (error) {
-    logger.error(`[Engine] Episode scrape failed for ${animeId}: ${error.message}`);
+    logger.error(
+      `[Engine] Episode scrape failed for ${animeId}: ${error.message}`,
+    );
   }
 }
 
@@ -126,8 +212,8 @@ async function scrapeEpisodes(animeId, animeUrl, source) {
  * @returns {Promise<Array>} Array of streaming sources
  */
 async function fetchEpisodeSources(episodeId) {
-  const episode = await Episode.findById(episodeId).populate('animeId');
-  if (!episode) throw new Error('Episode not found');
+  const episode = await Episode.findById(episodeId).populate("animeId");
+  if (!episode) throw new Error("Episode not found");
 
   // If we already have cached sources, return them
   if (episode.streamingSources.length > 0) {
@@ -137,19 +223,37 @@ async function fetchEpisodeSources(episodeId) {
 
   // Find the right source module
   const anime = episode.animeId;
-  const source = SOURCES.find((s) => s.name === anime.source);
-  if (!source) throw new Error(`Source "${anime.source}" not found`);
+  const source = SOURCES.find((s) => s.name === anime.scrapeSource);
+  if (!source) throw new Error(`Source "${anime.scrapeSource}" not found`);
 
-  // Build episode URL — customize this pattern per source
-  const episodeUrl = `${source.BASE_URL || ''}/${anime.sourceId}-episode-${episode.number}`;
+  const fallbackUrl = `${source.BASE_URL || ""}/${anime.sourceId}-episode-${episode.number}`;
+  const candidateUrls =
+    typeof source.buildEpisodeUrls === "function"
+      ? source.buildEpisodeUrls({ anime, episode, fallbackUrl })
+      : [fallbackUrl];
 
-  const sources = await source.getStreamingSources(episodeUrl);
+  let sources = [];
+  for (const url of candidateUrls) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      sources = await source.getStreamingSources(url);
+      if (sources.length > 0) break;
+    } catch (error) {
+      logger.warn(`[Engine] Source fetch failed for URL ${url}: ${error.message}`);
+    }
+  }
+
+  if (sources.length === 0) {
+    logger.warn(`[Engine] No streaming sources found for episode ${episodeId}`);
+  }
 
   // Cache the sources
   episode.streamingSources = sources;
   await episode.save();
 
-  logger.info(`[Engine] Fetched and cached ${sources.length} sources for episode ${episodeId}`);
+  logger.info(
+    `[Engine] Fetched and cached ${sources.length} sources for episode ${episodeId}`,
+  );
   return sources;
 }
 
@@ -157,21 +261,33 @@ async function fetchEpisodeSources(episodeId) {
  * CLI entry point — run directly via `npm run scrape`
  */
 async function runScrape() {
-  const mongoose = require('mongoose');
-  const env = require('../config/env');
+  const mongoose = require("mongoose");
+  const env = require("../config/env");
 
   await mongoose.connect(env.MONGODB_URI);
-  logger.info('[Engine] Connected to MongoDB for scrape run');
+  logger.info("[Engine] Connected to MongoDB for scrape run");
 
-  const query = process.argv[2] || 'One Piece';
-  await scrape(query, { fetchEpisodes: true });
+  const query = process.argv[2];
 
-  const puppeteerPool = require('../utils/puppeteerPool');
+  if (query && query.trim()) {
+    await scrape(query.trim(), { fetchEpisodes: true });
+  } else {
+    // Default behavior: ingest the catalog instead of a single hardcoded title.
+    await scrapeCatalog({ fetchEpisodes: true, maxPages: 25 });
+  }
+
+  const puppeteerPool = require("../utils/puppeteerPool");
   await puppeteerPool.shutdown();
   await mongoose.disconnect();
 
-  logger.info('[Engine] Scrape run finished. Exiting.');
+  logger.info("[Engine] Scrape run finished. Exiting.");
   process.exit(0);
 }
 
-module.exports = { scrape, scrapeEpisodes, fetchEpisodeSources, runScrape };
+module.exports = {
+  scrape,
+  scrapeCatalog,
+  scrapeEpisodes,
+  fetchEpisodeSources,
+  runScrape,
+};

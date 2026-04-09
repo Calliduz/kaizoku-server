@@ -1,8 +1,8 @@
-const gogoanime = require('./src/scrapers/sources/gogoanime.js');
+const gogoanime = require("../scrapers/sources/gogoanime.js");
 
 async function testAll() {
   console.log("=== Testing Search ===");
-  const results = await gogoanime.searchAnime('frieren');
+  const results = await gogoanime.searchAnime("frieren");
   console.log(results);
 
   if (results && results.length > 0) {
@@ -19,4 +19,9 @@ async function testAll() {
   }
 }
 
-testAll().then(() => process.exit(0)).catch(err => { console.error(err); process.exit(1); });
+testAll()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
