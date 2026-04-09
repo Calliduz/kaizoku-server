@@ -23,6 +23,16 @@ function createApp() {
     })
   );
 
+  // ── Health check (No Rate Limit) ──────────────────────
+  app.get('/health', (_req, res) => {
+    res.json({
+      status: 'UP',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      memoryUsage: process.memoryUsage(),
+    });
+  });
+
   // ── Rate limiting ─────────────────────────────────────
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
@@ -36,11 +46,6 @@ function createApp() {
   // ── Parsing & logging ─────────────────────────────────
   app.use(express.json({ limit: '10kb' }));
   app.use(morgan(env.isDev ? 'dev' : 'combined'));
-
-  // ── Health check ──────────────────────────────────────
-  app.get('/api/health', (_req, res) => {
-    res.json({ success: true, message: 'Kaizoku API is running', timestamp: new Date() });
-  });
 
   // ── API routes ────────────────────────────────────────
   app.use('/api', animeRoutes);
