@@ -126,7 +126,8 @@ const getEpisodes = asyncHandler(async (req, res) => {
  * @route   GET /api/episodes/:id/sources
  */
 const getEpisodeSources = asyncHandler(async (req, res) => {
-  const sources = await fetchEpisodeSources(req.params.id);
+  const { refresh } = req.query;
+  const sources = await fetchEpisodeSources(req.params.id, refresh === 'true');
 
   res.json({ success: true, data: sources });
 });

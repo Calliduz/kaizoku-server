@@ -10,9 +10,17 @@
     "seed": "node src/scripts/seed.js",
     "postinstall": "npx puppeteer browsers install chrome"
   },
-  "keywords": ["anime", "streaming", "scraper"],
+  "keywords": [
+    "anime",
+    "streaming",
+    "scraper"
+  ],
   "license": "MIT",
   "dependencies": {
+    "@consumet/extensions": "^1.8.8",
+    "aniwatch": "^2.27.9",
+    "axios": "^1.15.0",
+    "cheerio": "^1.2.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",

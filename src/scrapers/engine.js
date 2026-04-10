@@ -8,8 +8,11 @@ const fuzzball = require("fuzzball");
 // ── Registered source modules ──────────────────────────────
 // Add new sources here after creating them in ./sources/
 const gogoanime = require("./sources/gogoanime");
+const animepahe = require("./sources/animepahe");
+const aniwatch = require("./sources/aniwatch");
+const animekai = require("./sources/animekai");
 
-const SOURCES = [gogoanime];
+const SOURCES = [gogoanime, animepahe, aniwatch, animekai];
 // ────────────────────────────────────────────────────────────
 
 function toSlug(value = "") {
@@ -212,7 +215,7 @@ async function scrapeEpisodes(animeId, animeUrl, source) {
             sourceEpisodeId: ep.sourceEpisodeId || "",
           },
         },
-        { upsert: true, new: true },
+        { upsert: true, new: true, runValidators: true },
       );
     }
 
@@ -228,56 +231,142 @@ async function scrapeEpisodes(animeId, animeUrl, source) {
 
 /**
  * Fetch streaming sources for an episode on-demand.
- * Called when a user clicks "play" — sources are fetched in real-time
- * and cached in the episode document.
+ * Now parallelized to aggregate results from ALL providers.
  *
  * @param {string} episodeId - MongoDB Episode _id
+ * @param {boolean} [forceRefresh=false] - If true, ignore cache and re-scrape
  * @returns {Promise<Array>} Array of streaming sources
  */
-async function fetchEpisodeSources(episodeId) {
+async function fetchEpisodeSources(episodeId, forceRefresh = false) {
   const episode = await Episode.findById(episodeId).populate("animeId");
   if (!episode) throw new Error("Episode not found");
 
-  // If we already have cached sources, return them
-  if (episode.streamingSources.length > 0) {
+  // If we already have cached sources and not forcing refresh, return them
+  if (!forceRefresh && episode.streamingSources.length > 0) {
     logger.debug(`[Engine] Returning cached sources for episode ${episodeId}`);
     return episode.streamingSources;
   }
 
-  // Find the right source module
   const anime = episode.animeId;
-  const source = SOURCES.find((s) => s.name === anime.scrapeSource);
-  if (!source) throw new Error(`Source "${anime.scrapeSource}" not found`);
+  logger.info(`[Engine] Hunting sources for "${anime.title}"...`);
 
+  // Parallelize discovery across all registered sources
+  const results = await Promise.allSettled(
+    SOURCES.map(async (source) => {
+      try {
+        let sourceResults = [];
+
+        // Scenario A: This source is already the recorded primary
+        if (source.name === anime.scrapeSource && anime.sourceId) {
+          sourceResults = await trySourceWithFallbacks(source, anime, episode);
+        }
+
+        // Scenario B: Search and match this source (Aggressive Discovery)
+        if (sourceResults.length === 0) {
+          const searchResults = await source.searchAnime(anime.title);
+          const { bestItem, score } = getHeuristicBestMatch(anime, searchResults);
+          
+          if (bestItem && score > 75) {
+            // Find the specific episode in the alt source list
+            const altEpisodes = await source.getEpisodes(bestItem.url);
+            const matchedEp = altEpisodes.find(e => e.number === episode.number);
+            
+            if (matchedEp) {
+              sourceResults = await source.getStreamingSources(matchedEp.url);
+            }
+          }
+        }
+
+        // Tag sources with provider name for the UI
+        return sourceResults.map(s => ({
+          ...s,
+          server: `${source.name.charAt(0).toUpperCase() + source.name.slice(1)} - ${s.server || "Primary"}`
+        }));
+      } catch (err) {
+        logger.error(`[Engine] Aggregator task for ${source.name} failed: ${err.message}`);
+        return [];
+      }
+    })
+  );
+
+  // Flatten and deduplicate by URL
+  let allSources = [];
+  const seenUrls = new Set();
+
+  for (const settled of results) {
+    if (settled.status === "fulfilled" && settled.value) {
+      for (const src of settled.value) {
+        if (!seenUrls.has(src.url)) {
+          seenUrls.add(src.url);
+          allSources.push(src);
+        }
+      }
+    }
+  }
+
+  // Sort: High quality first, then Dub last (usually Sub is preferred)
+  allSources.sort((a, b) => {
+    const qA = parseInt(a.quality) || 0;
+    const qB = parseInt(b.quality) || 0;
+    if (qB !== qA) return qB - qA;
+    return (a.audio === "dub" ? 1 : 0) - (b.audio === "dub" ? 1 : 0);
+  });
+
+  // Cache the sources using atomic update
+  const updatedEpisode = await Episode.findByIdAndUpdate(
+    episode._id,
+    { $set: { streamingSources: allSources } },
+    { new: true }
+  );
+
+  logger.info(
+    `[Engine] Aggregated ${allSources.length} unique sources for episode ${episodeId}`,
+  );
+  return updatedEpisode.streamingSources;
+}
+
+/**
+ * Helper to try fetching sources with internal source-specific URL fallbacks
+ */
+async function trySourceWithFallbacks(source, anime, episode) {
   const fallbackUrl = `${source.BASE_URL || ""}/${anime.sourceId}-episode-${episode.number}`;
   const candidateUrls =
     typeof source.buildEpisodeUrls === "function"
       ? source.buildEpisodeUrls({ anime, episode, fallbackUrl })
-      : [fallbackUrl];
+      : [fallbackUrl, episode.url].filter(Boolean);
 
-  let sources = [];
   for (const url of candidateUrls) {
     try {
-      // eslint-disable-next-line no-await-in-loop
-      sources = await source.getStreamingSources(url);
-      if (sources.length > 0) break;
+      const sources = await source.getStreamingSources(url);
+      if (sources.length > 0) return sources;
     } catch (error) {
-      logger.warn(`[Engine] Source fetch failed for URL ${url}: ${error.message}`);
+      logger.warn(`[Engine] Fetch failed for URL ${url}: ${error.message}`);
     }
   }
+  return [];
+}
 
-  if (sources.length === 0) {
-    logger.warn(`[Engine] No streaming sources found for episode ${episodeId}`);
+/**
+ * Heuristic fuzzy match helper
+ */
+function getHeuristicBestMatch(anime, searchResults) {
+  let bestItem = null;
+  let highestScore = 0;
+  const targetTitles = [anime.title, ...(anime.altTitles || [])].filter(Boolean);
+
+  for (const item of searchResults) {
+    for (const target of targetTitles) {
+      const score = Math.max(
+        fuzzball.ratio(item.title.toLowerCase(), target.toLowerCase()),
+        fuzzball.partial_ratio(item.title.toLowerCase(), target.toLowerCase())
+      );
+      if (score > highestScore) {
+        highestScore = score;
+        bestItem = item;
+      }
+    }
   }
-
-  // Cache the sources
-  episode.streamingSources = sources;
-  await episode.save();
-
-  logger.info(
-    `[Engine] Fetched and cached ${sources.length} sources for episode ${episodeId}`,
-  );
-  return sources;
+  return { bestItem, score: highestScore };
 }
 
 /**
@@ -319,9 +408,15 @@ async function linkAndFetchEpisodes(animeId) {
 
       if (bestItem && highestScore > 70) {
         logger.info(`[Engine] Matched "${anime.title}" to source "${bestItem.title}" with score ${highestScore}`);
-        anime.sourceId = bestItem.sourceId;
-        anime.scrapeSource = source.name;
-        await anime.save();
+        
+        // Atomic update to prevent VersionError during concurrent source discovery
+        await Anime.findByIdAndUpdate(anime._id, {
+          $set: {
+            sourceId: bestItem.sourceId,
+            scrapeSource: source.name
+          }
+        });
+
         await scrapeEpisodes(anime._id, bestItem.url, source);
         return;
       }

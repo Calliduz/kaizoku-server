@@ -4,6 +4,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const animeRoutes = require('./routes/animeRoutes');
+const scraperRoutes = require('./routes/scraperRoutes');
 const errorHandler = require('./middleware/errorHandler');
 const env = require('./config/env');
 
@@ -13,6 +14,9 @@ const env = require('./config/env');
  */
 function createApp() {
   const app = express();
+  
+  // Trust proxy for rate limiting (essential for Render/Vercel/Nginx)
+  app.set('trust proxy', 1);
 
   // ── Security ──────────────────────────────────────────
   app.use(helmet());
@@ -36,7 +40,7 @@ function createApp() {
   // ── Rate limiting ─────────────────────────────────────
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100,
+    max: 300,
     standardHeaders: true,
     legacyHeaders: false,
     message: { success: false, error: { message: 'Too many requests, please try again later' } },
@@ -49,6 +53,7 @@ function createApp() {
 
   // ── API routes ────────────────────────────────────────
   app.use('/api', animeRoutes);
+  app.use('/api/scraper', scraperRoutes);
 
   // ── 404 handler ───────────────────────────────────────
   app.use((_req, res) => {

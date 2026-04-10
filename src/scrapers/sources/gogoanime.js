@@ -254,7 +254,17 @@ async function getStreamingSources(episodeUrl) {
       const key = `${src.type}|${src.url}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      deduped.push(src);
+      
+      // Smart Audio Detection: Gogoanime usually has "-dub" or "-english-dub" in the URL
+      const lowerUrl = src.url.toLowerCase();
+      const lowerEpUrl = episodeUrl.toLowerCase();
+      const isDub = lowerUrl.includes("-dub") || lowerEpUrl.includes("-dub");
+      
+      deduped.push({
+        ...src,
+        audio: isDub ? "dub" : "sub",
+        quality: src.quality === "default" ? "HD" : src.quality
+      });
     }
 
     // Prefer direct streams before iframe embeds.

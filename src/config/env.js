@@ -13,6 +13,7 @@ const env = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   TARGET_URL: process.env.TARGET_URL || '',
   SCRAPE_CONCURRENCY: parseInt(process.env.SCRAPE_CONCURRENCY, 10) || 3,
+  ENABLE_SCHEDULER: process.env.ENABLE_SCHEDULER === "true",
 
   get isDev() {
     return this.NODE_ENV === 'development';

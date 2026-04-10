@@ -21,8 +21,12 @@ async function start() {
   const server = app.listen(env.PORT, () => {
     logger.info(`Kaizoku API running on http://localhost:${env.PORT} [${env.NODE_ENV}]`);
     
-    // Start background catalog sync (every 30 mins)
-    scheduler.startCatalogSync(30);
+    // Start background catalog sync (every 30 mins) if enabled
+    if (env.ENABLE_SCHEDULER) {
+      scheduler.startCatalogSync(30);
+    } else {
+      logger.info("[Scheduler] Background catalog sync is disabled (ENABLE_SCHEDULER=false)");
+    }
   });
 
   // ── Graceful shutdown ──────────────────────────────────
