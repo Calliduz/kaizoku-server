@@ -1,6 +1,6 @@
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const logger = require('./logger');
+const puppeteer = require("puppeteer-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+const logger = require("./logger");
 
 puppeteer.use(StealthPlugin());
 
@@ -44,25 +44,29 @@ class PuppeteerPool {
   }
 
   async _launch() {
-    logger.info('Launching Puppeteer browser (stealth mode)...');
+    logger.info("Launching Puppeteer browser (stealth mode)...");
 
     const browser = await puppeteer.launch({
-      headless: 'new',
+      headless: true,
       args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--disable-gpu',
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage", // Uses /tmp instead of shared memory (prevents crashes)
+        "--disable-accelerated-2d-canvas",
+        "--disable-gpu",
+        "--single-process", // Highly recommended for low-memory environments
+        "--no-zygote",
       ],
     });
 
-    browser.on('disconnected', () => {
-      logger.warn('Puppeteer browser disconnected. Will relaunch on next acquire().');
+    browser.on("disconnected", () => {
+      logger.warn(
+        "Puppeteer browser disconnected. Will relaunch on next acquire().",
+      );
       this._browser = null;
     });
 
-    logger.info('Puppeteer browser launched successfully.');
+    logger.info("Puppeteer browser launched successfully.");
     return browser;
   }
 
@@ -71,7 +75,7 @@ class PuppeteerPool {
    */
   async shutdown() {
     if (this._browser) {
-      logger.info('Shutting down Puppeteer browser...');
+      logger.info("Shutting down Puppeteer browser...");
       await this._browser.close();
       this._browser = null;
     }
