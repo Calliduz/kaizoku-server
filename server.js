@@ -3,6 +3,7 @@ const connectDB = require('./src/config/db');
 const env = require('./src/config/env');
 const logger = require('./src/utils/logger');
 const puppeteerPool = require('./src/utils/puppeteerPool');
+const scheduler = require('./src/utils/scheduler');
 
 /**
  * Server entry point.
@@ -19,6 +20,9 @@ async function start() {
 
   const server = app.listen(env.PORT, () => {
     logger.info(`Kaizoku API running on http://localhost:${env.PORT} [${env.NODE_ENV}]`);
+    
+    // Start background catalog sync (every 30 mins)
+    scheduler.startCatalogSync(30);
   });
 
   // ── Graceful shutdown ──────────────────────────────────
@@ -26,6 +30,7 @@ async function start() {
     logger.info(`${signal} received. Shutting down gracefully...`);
     server.close(async () => {
       await puppeteerPool.shutdown();
+      scheduler.stopCatalogSync();
       logger.info('Server closed.');
       process.exit(0);
     });
