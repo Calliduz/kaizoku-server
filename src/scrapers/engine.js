@@ -134,18 +134,32 @@ async function scrapeCatalog(options = {}) {
       const catalogItems = await source.getCatalogAnime(maxPages);
 
       for (const item of catalogItems) {
-        // Keep AniList matching lightweight for full-catalog runs.
         const anilistResults = await searchAniList(item.title);
         const { match } = findBestMatch(item.title, anilistResults);
 
-        const animeData = {
-          title: item.title,
-          slug: toSlug(item.title),
-          sourceId: item.sourceId,
-          scrapeSource: source.name,
-          coverImage: item.image || "",
-          ...(match ? normalizeAniListData(match) : {}),
+        // 1. Prepare Core Source Data (Always update these for tracking)
+        const updateDoc = {
+          $set: {
+            sourceId: item.sourceId,
+            scrapeSource: source.name,
+            updatedAt: new Date(), // Force updatedAt bump for listing
+          },
         };
+
+        // 2. Prepare High-Quality Metadata (If AniList match found)
+        if (match) {
+          const enrichedData = normalizeAniListData(match);
+          updateDoc.$set = { ...updateDoc.$set, ...enrichedData };
+        } else {
+          // 3. Prepare Low-Quality Fallback (Only useful for NEW records)
+          // We use $setOnInsert so these fields only apply if the record is created now.
+          // This prevents overwriting existing HQ data from previous manual scrapes.
+          updateDoc.$setOnInsert = {
+            title: item.title,
+            slug: toSlug(item.title),
+            coverImage: item.image || "",
+          };
+        }
 
         const filter = match && match.id 
           ? { anilistId: match.id } 
@@ -153,7 +167,7 @@ async function scrapeCatalog(options = {}) {
 
         const anime = await Anime.findOneAndUpdate(
           filter,
-          { $set: animeData },
+          updateDoc,
           { upsert: true, new: true, runValidators: true },
         );
 
