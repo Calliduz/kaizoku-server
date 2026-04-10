@@ -162,7 +162,7 @@ async function scrapeCatalog(options = {}) {
         }
 
         const filter = match && match.id 
-          ? { anilistId: match.id } 
+          ? { $or: [{ anilistId: match.id }, { sourceId: item.sourceId, scrapeSource: source.name }] } 
           : { sourceId: item.sourceId, scrapeSource: source.name };
 
         const anime = await Anime.findOneAndUpdate(

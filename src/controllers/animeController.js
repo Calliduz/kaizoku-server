@@ -84,8 +84,10 @@ const getById = asyncHandler(async (req, res) => {
     throw error;
   }
 
-  // Auto-enrich metadata if recommendations or relations are missing
-  if ((!anime.recommendations || anime.recommendations.length === 0) && (!anime.relations || anime.relations.length === 0)) {
+  // Auto-enrich metadata if we have signs of low-quality or missing data
+  const isLowQuality = !anime.anilistId || !anime.description || !anime.relations || anime.relations.length === 0;
+  
+  if (isLowQuality) {
     const anilistResults = await searchAniList(anime.title, 5);
     if (anilistResults.length > 0) {
       // Use the first result (highest match score)
