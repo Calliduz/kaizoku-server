@@ -23,6 +23,28 @@ function toSlug(value = "") {
 }
 
 /**
+ * Clean a scraped title to extract the series name.
+ * Removes "Episode X", "Sub", "Dub", "1080p", etc.
+ */
+function cleanTitle(title = "") {
+  return title
+    .replace(/\s+/g, " ")
+    .replace(/episode\s+\d+/gi, "")
+    .replace(/eps\s+\d+/gi, "")
+    .replace(/\s+0\d+\s+/g, " ")
+    .replace(/\s+0\d+$/g, " ")
+    .replace(/\b(?:Season|S)\s*\d+\b/gi, "")
+    .replace(/\d+(?:st|nd|rd|th)\s+Season/gi, "")
+    .replace(/\s+(?:Part|Pt)\s*\d+/gi, "")
+    .replace(/\s+Cour\s*\d+/gi, "")
+    .replace(/\b(?:Subbed|Dubbed|Sub|Dub|English|Italiano|Español|Português)\b/gi, "")
+    .replace(/\[\d+p\]/gi, "")
+    .replace(/[\[\]\(\)\-:]/g, " ") // Replace brackets, parens, hyphens, colons with space
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
  * Scraper Engine — Orchestrator
  *
  * Flow:
@@ -65,9 +87,12 @@ async function scrape(query, options = {}) {
         const { match } = findBestMatch(item.title, anilistResults);
 
         // Step 3: Build the anime document
+        const cleanedTitle = cleanTitle(item.title);
+        const slug = toSlug(cleanedTitle);
+
         const animeData = {
-          title: item.title,
-          slug: toSlug(item.title),
+          title: cleanedTitle,
+          slug: slug,
           sourceId: item.sourceId,
           scrapeSource: source.name,
           coverImage: item.image || "",
@@ -75,9 +100,14 @@ async function scrape(query, options = {}) {
         };
 
         // Step 4: Upsert into MongoDB (prefer anilistId lookup to merge with Offline DB)
-        const filter = match && match.id 
-          ? { anilistId: match.id } 
-          : { sourceId: item.sourceId, scrapeSource: source.name };
+        // Ensure slug is also part of the query to prevent duplicates if anilistId is missing
+        const filter = {
+          $or: [
+            ...(match && match.id ? [{ anilistId: match.id }] : []),
+            { slug: slug },
+            { sourceId: item.sourceId, scrapeSource: source.name }
+          ]
+        };
 
         const anime = await Anime.findOneAndUpdate(
           filter,
@@ -140,6 +170,9 @@ async function scrapeCatalog(options = {}) {
         const anilistResults = await searchAniList(item.title);
         const { match } = findBestMatch(item.title, anilistResults);
 
+        const cleanedTitle = cleanTitle(item.title);
+        const slug = toSlug(cleanedTitle);
+
         // 1. Prepare Core Source Data (Always update these for tracking)
         const updateDoc = {
           $set: {
@@ -155,18 +188,20 @@ async function scrapeCatalog(options = {}) {
           updateDoc.$set = { ...updateDoc.$set, ...enrichedData };
         } else {
           // 3. Prepare Low-Quality Fallback (Only useful for NEW records)
-          // We use $setOnInsert so these fields only apply if the record is created now.
-          // This prevents overwriting existing HQ data from previous manual scrapes.
           updateDoc.$setOnInsert = {
-            title: item.title,
-            slug: toSlug(item.title),
+            title: cleanedTitle,
+            slug: slug,
             coverImage: item.image || "",
           };
         }
 
-        const filter = match && match.id 
-          ? { $or: [{ anilistId: match.id }, { sourceId: item.sourceId, scrapeSource: source.name }] } 
-          : { sourceId: item.sourceId, scrapeSource: source.name };
+        const filter = {
+          $or: [
+            ...(match && match.id ? [{ anilistId: match.id }] : []),
+            { slug: slug },
+            { sourceId: item.sourceId, scrapeSource: source.name }
+          ]
+        };
 
         const anime = await Anime.findOneAndUpdate(
           filter,
