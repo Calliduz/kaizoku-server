@@ -67,6 +67,18 @@ const recommendationSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const relationSchema = new mongoose.Schema(
+  {
+    id: Number,
+    relationType: String, // SEQUEL | PREQUEL | SIDE_STORY | etc.
+    title: { type: String, default: '' },
+    coverImage: { type: String, default: '' },
+    status: String,
+    format: String,
+  },
+  { _id: false },
+);
+
 const animeSchema = new mongoose.Schema(
   {
     title: {
@@ -196,6 +208,10 @@ const animeSchema = new mongoose.Schema(
     },
     recommendations: {
       type: [recommendationSchema],
+      default: [],
+    },
+    relations: {
+      type: [relationSchema],
       default: [],
     },
     // Source scrape metadata

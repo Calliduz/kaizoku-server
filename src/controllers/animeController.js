@@ -1,6 +1,7 @@
 const Anime = require('../models/Anime');
 const Episode = require('../models/Episode');
 const { scrape, fetchEpisodeSources, linkAndFetchEpisodes } = require('../scrapers/engine');
+const { searchAniList, normalizeAniListData } = require('../scrapers/anilist');
 const asyncHandler = require('../middleware/asyncHandler');
 
 /**
@@ -75,12 +76,23 @@ const getAll = asyncHandler(async (req, res) => {
  * @route   GET /api/anime/:id
  */
 const getById = asyncHandler(async (req, res) => {
-  const anime = await Anime.findById(req.params.id).lean();
+  let anime = await Anime.findById(req.params.id);
 
   if (!anime) {
     const error = new Error('Anime not found');
     error.statusCode = 404;
     throw error;
+  }
+
+  // Auto-enrich metadata if recommendations or relations are missing
+  if ((!anime.recommendations || anime.recommendations.length === 0) && (!anime.relations || anime.relations.length === 0)) {
+    const anilistResults = await searchAniList(anime.title, 5);
+    if (anilistResults.length > 0) {
+      // Use the first result (highest match score)
+      const enrichedData = normalizeAniListData(anilistResults[0]);
+      Object.assign(anime, enrichedData);
+      await anime.save();
+    }
   }
 
   res.json({ success: true, data: anime });
@@ -92,7 +104,7 @@ const getById = asyncHandler(async (req, res) => {
  */
 const getEpisodes = asyncHandler(async (req, res) => {
   let episodes = await Episode.find({ animeId: req.params.id })
-    .sort({ number: 1 })
+    .sort({ number: -1 }) // Sort latest first by default
     .lean();
 
   if (episodes.length === 0) {
@@ -100,7 +112,7 @@ const getEpisodes = asyncHandler(async (req, res) => {
     await linkAndFetchEpisodes(req.params.id);
     // Re-fetch the newly inserted episodes
     episodes = await Episode.find({ animeId: req.params.id })
-      .sort({ number: 1 })
+      .sort({ number: -1 })
       .lean();
   }
 
@@ -140,4 +152,28 @@ const triggerScrape = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { getAll, getById, getEpisodes, getEpisodeSources, triggerScrape };
+/**
+ * @desc    Get title suggestions for search
+ * @route   GET /api/anime/search/suggest
+ * @query   query
+ */
+const getSuggestions = asyncHandler(async (req, res) => {
+  const { query } = req.query;
+  if (!query || query.length < 2) {
+    return res.json({ success: true, data: [] });
+  }
+
+  const searchRegex = new RegExp(query.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i');
+  
+  const suggestions = await Anime.find({
+    $or: [{ title: searchRegex }, { altTitles: searchRegex }]
+  })
+  .select('title coverImage format')
+  .sort({ popularity: -1 })
+  .limit(6)
+  .lean();
+
+  res.json({ success: true, data: suggestions });
+});
+
+module.exports = { getAll, getById, getEpisodes, getEpisodeSources, triggerScrape, getSuggestions };

@@ -113,6 +113,18 @@ const SEARCH_QUERY = `
             }
           }
         }
+        relations {
+          edges {
+            relationType
+            node {
+              id
+              title { romaji english }
+              coverImage { large }
+              format
+              status
+            }
+          }
+        }
       }
     }
   }
@@ -211,6 +223,16 @@ function normalizeAniListData(media) {
       averageScore: n.mediaRecommendation.averageScore || 0,
     }));
 
+  // Relations (Sequels, Prequels, etc.)
+  const relations = (media.relations?.edges || []).map((edge) => ({
+    id: edge.node?.id,
+    relationType: edge.relationType,
+    title: edge.node?.title?.english || edge.node?.title?.romaji || '',
+    coverImage: edge.node?.coverImage?.large || '',
+    format: edge.node?.format,
+    status: edge.node?.status,
+  }));
+
   // Top tags (ranked >= 60%)
   const tags = (media.tags || [])
     .filter((t) => t.rank >= 60)
@@ -256,6 +278,7 @@ function normalizeAniListData(media) {
     trailer,
     externalLinks: (media.externalLinks || []).map((l) => ({ url: l.url, site: l.site, type: l.type })),
     recommendations,
+    relations,
   };
 }
 

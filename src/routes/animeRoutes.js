@@ -5,12 +5,14 @@ const {
   getEpisodes,
   getEpisodeSources,
   triggerScrape,
+  getSuggestions,
 } = require('../controllers/animeController');
 
 const router = Router();
 
 // ── Anime catalog ──────────────────────────────────────────
 router.get('/anime', getAll);
+router.get('/anime/search/suggest', getSuggestions);
 router.get('/anime/:id', getById);
 router.get('/anime/:id/episodes', getEpisodes);
 
