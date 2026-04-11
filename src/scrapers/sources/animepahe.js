@@ -13,7 +13,8 @@ const BASE_URL = "https://animepahe.pw";
 const API_URL = "https://animepahe.pw/api";
 
 const requestHeaders = {
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   Accept: "application/json, text/plain, */*",
   "Accept-Language": "en-US,en;q=0.9",
   Referer: BASE_URL,
@@ -31,8 +32,9 @@ async function waitForChallengeBypass(page, timeoutMs = 60000) {
         const bodyText = String(document.body?.innerText || "");
         const normalized = `${title}\n${bodyText}`.toLowerCase();
         const blocked =
-          normalized.includes("checking your browser before accessing animepahe.com") ||
-          normalized.includes("ddos-guard");
+          normalized.includes(
+            "checking your browser before accessing animepahe.com",
+          ) || normalized.includes("ddos-guard");
         return { blocked, title };
       });
 
@@ -57,16 +59,21 @@ async function searchAnime(query) {
       headers: requestHeaders,
       timeout: 10000,
     });
-    
+
     // Safety Check: Verify response is actually JSON before parsing
     // DDoS-guard often returns HTML here
     if (typeof response.data !== "object" || response.data === null) {
-      if (typeof response.data === "string" && response.data.toLowerCase().includes("checking your browser")) {
-        logger.warn(`[${SOURCE_NAME}] API returned DDoS-guard challenge. Falling back to browser...`);
+      if (
+        typeof response.data === "string" &&
+        response.data.toLowerCase().includes("checking your browser")
+      ) {
+        logger.warn(
+          `[${SOURCE_NAME}] API returned DDoS-guard challenge. Falling back to browser...`,
+        );
         throw new Error("DDoS Challenge Detected");
       }
     }
-    
+
     if (response.data && Array.isArray(response.data.data)) {
       return response.data.data.map((item) => ({
         sourceId: item.session, // Use session as unique sourceId
@@ -83,11 +90,18 @@ async function searchAnime(query) {
   const page = await browser.newPage();
   try {
     await page.setUserAgent(requestHeaders["User-Agent"]);
-    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
-    
+    await page.goto(searchUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 15000,
+    });
+
     // Wait for JSON
-    await page.waitForFunction(() => document.body.innerText.trim().startsWith("{"), { timeout: 8000 }).catch(() => {});
-    
+    await page
+      .waitForFunction(() => document.body.innerText.trim().startsWith("{"), {
+        timeout: 8000,
+      })
+      .catch(() => {});
+
     const responseText = await page.evaluate(() => document.body.innerText);
     const response = JSON.parse(responseText);
 
@@ -115,32 +129,91 @@ async function getEpisodes(animeUrl) {
   const session = animeUrl.split("/").pop();
   const episodesApiUrl = `${API_URL}?m=release&id=${session}&sort=episode_asc&page=1`;
 
-  const mapApiEpisodes = (items) => items.map((item) => ({
-    number: item.episode,
-    title: item.title || `Episode ${item.episode}`,
-    sourceEpisodeId: item.session, // Crucial: AnimePahe uses episode session for play links
-    url: `${BASE_URL}/play/${session}/${item.session}`,
-  }));
+  const mapApiEpisodes = (items) =>
+    items.map((item) => ({
+      number: item.episode,
+      title: item.title || `Episode ${item.episode}`,
+      sourceEpisodeId: item.session, // Crucial: AnimePahe uses episode session for play links
+      url: `${BASE_URL}/play/${session}/${item.session}`,
+    }));
 
   try {
-    const response = await axios.get(episodesApiUrl, { headers: requestHeaders });
+    const response = await axios.get(episodesApiUrl, {
+      headers: requestHeaders,
+    });
     if (response.data && Array.isArray(response.data.data)) {
-      let eps = mapApiEpisodes(response.data.data);
-      const lastPage = response.data.last_page;
-      
-      if (lastPage > 1) {
-        // Fetch remaining pages sequentially for stability
-        for (let p = 2; p <= lastPage; p++) {
-          const nextResp = await axios.get(`${episodesApiUrl.replace("page=1", `page=${p}`)}`, { headers: requestHeaders });
+      let eps = [...response.data.data];
+      const lastPage = response.data.last_page || 1;
+
+      for (let p = 2; p <= lastPage; p++) {
+        try {
+          const nextResp = await axios.get(
+            episodesApiUrl.replace("page=1", `page=${p}`),
+            { headers: requestHeaders },
+          );
           if (nextResp.data?.data) {
-            eps = eps.concat(mapApiEpisodes(nextResp.data.data));
+            eps = eps.concat(nextResp.data.data);
           }
+        } catch (e) {
+          logger.warn(
+            `[${SOURCE_NAME}] Failed to fetch page ${p} with axios: ${e.message}`,
+          );
         }
       }
-      return eps;
+      return mapApiEpisodes(eps);
     }
   } catch (err) {
-    // Browser fallback if needed... (optional, usually API works if headers match)
+    logger.warn(
+      `[${SOURCE_NAME}] API getEpisodes failed, trying browser fallback: ${err.message}`,
+    );
+  }
+
+  // Browser Fallback for DDOS guard
+  const browser = await puppeteerPool.acquire();
+  const page = await browser.newPage();
+  try {
+    await page.setUserAgent(requestHeaders["User-Agent"]);
+
+    let allData = [];
+    let currentPage = 1;
+    let lastPage = 1;
+
+    do {
+      const pagedUrl = episodesApiUrl.replace("page=1", `page=${currentPage}`);
+      await page.goto(pagedUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 15000,
+      });
+      await page
+        .waitForFunction(() => document.body.innerText.trim().startsWith("{"), {
+          timeout: 8000,
+        })
+        .catch(() => {});
+
+      const responseText = await page.evaluate(() => document.body.innerText);
+      try {
+        const responseJson = JSON.parse(responseText);
+        if (responseJson && Array.isArray(responseJson.data)) {
+          allData = allData.concat(responseJson.data);
+          lastPage = responseJson.last_page || 1;
+        }
+      } catch (parseErr) {
+        logger.error(
+          `[${SOURCE_NAME}] Failed to parse JSON from browser on page ${currentPage}`,
+        );
+        break; // Stop paginating on error
+      }
+
+      currentPage++;
+    } while (currentPage <= lastPage);
+
+    return mapApiEpisodes(allData);
+  } catch (error) {
+    logger.error(
+      `[${SOURCE_NAME}] getEpisodes Browser fallback failed: ${error.message}`,
+    );
+  } finally {
+    await page.close().catch(() => {});
   }
 
   return [];
@@ -154,7 +227,10 @@ async function getStreamingSources(episodeUrl) {
   const page = await browser.newPage();
   try {
     await page.setUserAgent(requestHeaders["User-Agent"]);
-    await page.goto(episodeUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.goto(episodeUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
+    });
     await waitForChallengeBypass(page);
 
     await page.waitForSelector("#resolutionMenu button", { timeout: 10000 });
@@ -193,7 +269,10 @@ async function getCatalogAnime(maxPages = 5) {
 
   try {
     for (let p = 1; p <= maxPages; p++) {
-      const resp = await axios.get(`${API_URL}?m=release&sort=episode_desc&page=${p}`, { headers: requestHeaders });
+      const resp = await axios.get(
+        `${API_URL}?m=release&sort=episode_desc&page=${p}`,
+        { headers: requestHeaders },
+      );
       if (resp.data?.data) {
         for (const item of resp.data.data) {
           // Since it's a list of episodes, we need the anime session
@@ -203,7 +282,7 @@ async function getCatalogAnime(maxPages = 5) {
       }
     }
   } catch (e) {}
-  
+
   // Real world fallback: Scrape homepage
   const browser = await puppeteerPool.acquire();
   const page = await browser.newPage();
@@ -214,7 +293,7 @@ async function getCatalogAnime(maxPages = 5) {
 
     const items = await page.evaluate(() => {
       const cards = document.querySelectorAll(".latest-release .box");
-      return Array.from(cards).map(card => {
+      return Array.from(cards).map((card) => {
         const link = card.querySelector("a");
         const img = card.querySelector("img");
         const animeUrl = link?.getAttribute("href") || "";
@@ -222,13 +301,16 @@ async function getCatalogAnime(maxPages = 5) {
         return {
           sourceId: session,
           title: link?.getAttribute("title") || "",
-          url: animeUrl.startsWith("http") ? animeUrl : `https://animepahe.pw${animeUrl}`,
-          image: img?.getAttribute("src") || img?.getAttribute("data-src") || "",
+          url: animeUrl.startsWith("http")
+            ? animeUrl
+            : `https://animepahe.pw${animeUrl}`,
+          image:
+            img?.getAttribute("src") || img?.getAttribute("data-src") || "",
         };
       });
     });
-    
-    return items.filter(i => i.sourceId && i.title);
+
+    return items.filter((i) => i.sourceId && i.title);
   } finally {
     await page.close().catch(() => {});
   }
@@ -241,4 +323,18 @@ module.exports = {
   getEpisodes,
   getStreamingSources,
   getCatalogAnime,
+  async buildEpisodeUrls({ anime, episode }) {
+    if (!anime.sourceId) return [];
+    try {
+      // Since anime.sourceId is the Animepahe session ID, we can fetch its episodes directly
+      const eps = await getEpisodes(`${BASE_URL}/anime/${anime.sourceId}`);
+      const matched = eps.find((e) => e.number === episode.number);
+      if (matched) return [matched.url];
+    } catch (error) {
+      logger.warn(
+        `[${SOURCE_NAME}] Failed to build episode URL for ${anime.title} Ep ${episode.number}: ${error.message}`,
+      );
+    }
+    return [];
+  },
 };

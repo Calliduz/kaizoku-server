@@ -1,8 +1,12 @@
-const Anime = require('../models/Anime');
-const Episode = require('../models/Episode');
-const { scrape, fetchEpisodeSources, linkAndFetchEpisodes } = require('../scrapers/engine');
-const { searchAniList, normalizeAniListData } = require('../scrapers/anilist');
-const asyncHandler = require('../middleware/asyncHandler');
+const Anime = require("../models/Anime");
+const Episode = require("../models/Episode");
+const {
+  scrape,
+  fetchEpisodeSources,
+  linkAndFetchEpisodes,
+} = require("../scrapers/engine");
+const { searchAniList, normalizeAniListData } = require("../scrapers/anilist");
+const asyncHandler = require("../middleware/asyncHandler");
 
 /**
  * @desc    Get all anime (paginated, searchable)
@@ -18,11 +22,11 @@ const getAll = asyncHandler(async (req, res) => {
   const filter = {};
 
   if (req.query.search) {
-    const searchRegex = new RegExp(req.query.search.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i');
-    filter.$or = [
-      { title: searchRegex },
-      { altTitles: searchRegex }
-    ];
+    const searchRegex = new RegExp(
+      req.query.search.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&"),
+      "i",
+    );
+    filter.$or = [{ title: searchRegex }, { altTitles: searchRegex }];
   }
 
   if (req.query.genre) {
@@ -39,23 +43,21 @@ const getAll = asyncHandler(async (req, res) => {
 
   // Determine standard tie-breakers logically prioritizing Main Series
   let sortConfig = { _id: -1 };
-  
+
   if (req.query.search) {
     // If searching, strongly favor length, popularity, and rating
     sortConfig = { totalEpisodes: -1, popularity: -1, rating: -1 };
   } else if (req.query.sort) {
-    if (req.query.sort === 'rating') sortConfig = { rating: -1, totalEpisodes: -1 };
-    else if (req.query.sort === 'popular') sortConfig = { popularity: -1, rating: -1 };
-    else if (req.query.sort === 'newest') sortConfig = { updatedAt: -1 };
+    if (req.query.sort === "rating")
+      sortConfig = { rating: -1, totalEpisodes: -1 };
+    else if (req.query.sort === "popular")
+      sortConfig = { popularity: -1, rating: -1 };
+    else if (req.query.sort === "newest") sortConfig = { updatedAt: -1 };
     else sortConfig = { updatedAt: -1 }; // Default to recently updated
   }
 
   const [anime, total] = await Promise.all([
-    Anime.find(filter)
-      .sort(sortConfig)
-      .skip(skip)
-      .limit(limit)
-      .lean(),
+    Anime.find(filter).sort(sortConfig).skip(skip).limit(limit).lean(),
     Anime.countDocuments(filter),
   ]);
 
@@ -79,21 +81,30 @@ const getById = asyncHandler(async (req, res) => {
   let anime = await Anime.findById(req.params.id);
 
   if (!anime) {
-    const error = new Error('Anime not found');
+    const error = new Error("Anime not found");
     error.statusCode = 404;
     throw error;
   }
 
   // Auto-enrich metadata if we have signs of low-quality or missing data
-  const isLowQuality = !anime.anilistId || !anime.description || !anime.relations || anime.relations.length === 0;
-  
+  const isLowQuality =
+    !anime.anilistId ||
+    !anime.description ||
+    !anime.relations ||
+    anime.relations.length === 0;
+
   if (isLowQuality) {
     const anilistResults = await searchAniList(anime.title, 5);
     if (anilistResults.length > 0) {
       // Use the first result (highest match score)
       const enrichedData = normalizeAniListData(anilistResults[0]);
-      Object.assign(anime, enrichedData);
-      await anime.save();
+
+      // Use findByIdAndUpdate to avoid VersionError constraints caused by concurrent requests
+      anime = await Anime.findByIdAndUpdate(
+        anime._id,
+        { $set: enrichedData },
+        { new: true, runValidators: true },
+      );
     }
   }
 
@@ -127,7 +138,7 @@ const getEpisodes = asyncHandler(async (req, res) => {
  */
 const getEpisodeSources = asyncHandler(async (req, res) => {
   const { refresh } = req.query;
-  const sources = await fetchEpisodeSources(req.params.id, refresh === 'true');
+  const sources = await fetchEpisodeSources(req.params.id, refresh === "true");
 
   res.json({ success: true, data: sources });
 });
@@ -140,8 +151,8 @@ const getEpisodeSources = asyncHandler(async (req, res) => {
 const triggerScrape = asyncHandler(async (req, res) => {
   const { query, fetchEpisodes = false } = req.body;
 
-  if (!query || typeof query !== 'string' || query.trim().length === 0) {
-    const error = new Error('Query is required and must be a non-empty string');
+  if (!query || typeof query !== "string" || query.trim().length === 0) {
+    const error = new Error("Query is required and must be a non-empty string");
     error.statusCode = 400;
     throw error;
   }
@@ -166,17 +177,27 @@ const getSuggestions = asyncHandler(async (req, res) => {
     return res.json({ success: true, data: [] });
   }
 
-  const searchRegex = new RegExp(query.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i');
-  
+  const searchRegex = new RegExp(
+    query.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&"),
+    "i",
+  );
+
   const suggestions = await Anime.find({
-    $or: [{ title: searchRegex }, { altTitles: searchRegex }]
+    $or: [{ title: searchRegex }, { altTitles: searchRegex }],
   })
-  .select('title coverImage format')
-  .sort({ popularity: -1 })
-  .limit(6)
-  .lean();
+    .select("title coverImage format")
+    .sort({ popularity: -1 })
+    .limit(6)
+    .lean();
 
   res.json({ success: true, data: suggestions });
 });
 
-module.exports = { getAll, getById, getEpisodes, getEpisodeSources, triggerScrape, getSuggestions };
+module.exports = {
+  getAll,
+  getById,
+  getEpisodes,
+  getEpisodeSources,
+  triggerScrape,
+  getSuggestions,
+};

@@ -1,4 +1,4 @@
-const puppeteerPool = require("../../utils/puppeteerPool");
+const { fetchHtml } = require("../../utils/fetcher");
 const logger = require("../../utils/logger");
 
 /**
@@ -55,65 +55,50 @@ const SELECTORS = {
  * @returns {Promise<Array<{ sourceId: string, title: string, url: string, image: string }>>}
  */
 async function searchAnime(query) {
-  const browser = await puppeteerPool.acquire();
-  const page = await browser.newPage();
-
   try {
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    );
-
     const searchUrl = `${BASE_URL}${SEARCH_PATH}${encodeURIComponent(query)}`;
     logger.info(`[${SOURCE_NAME}] Searching: ${searchUrl}`);
 
-    await page.goto(searchUrl, { waitUntil: "networkidle2", timeout: 30000 });
-
-    // Wait for results to load
-    await page
-      .waitForSelector(SELECTORS.searchResultItem, { timeout: 10000 })
-      .catch(() => {
-        logger.warn(`[${SOURCE_NAME}] No search results found for "${query}"`);
-      });
+    const { $ } = await fetchHtml(searchUrl);
+    
+    // Check if we got results
+    const items = $(SELECTORS.searchResultItem);
+    if (!items.length) {
+      logger.warn(`[${SOURCE_NAME}] No search results found for "${query}"`);
+      return [];
+    }
 
     // Extract search results
-    const results = await page.evaluate((selectors) => {
-      const items = document.querySelectorAll(selectors.searchResultItem);
-      return Array.from(items).map((item) => {
-        const linkEl = item.querySelector(selectors.searchResultLink);
-        const imageEl = item.querySelector(selectors.searchResultImage);
+    const results = items.map((i, el) => {
+      const linkEl = $(el).find(SELECTORS.searchResultLink);
+      const imageEl = $(el).find(SELECTORS.searchResultImage);
 
-        const href = linkEl?.getAttribute("href") || "";
-        // Prefer oldtitle attribute (clean title, no whitespace noise)
-        const title =
-          linkEl?.getAttribute("oldtitle") ||
-          item.querySelector('h2[itemprop="headline"]')?.textContent?.trim() ||
-          "";
-        // Support lazy-loaded images via data-src
-        const image =
-          imageEl?.getAttribute("data-src") ||
-          imageEl?.getAttribute("src") ||
-          "";
-        // Extract series slug from URL: /series/one-piece-1/ → one-piece-1
-        const slug = href.replace(/\/+$/, "").split("/").pop() || "";
+      const href = linkEl.attr("href") || "";
+      const title =
+        linkEl.attr("oldtitle") ||
+        $(el).find('h2[itemprop="headline"]').text().trim() ||
+        "";
+      
+      const image =
+        imageEl.attr("data-src") ||
+        imageEl.attr("src") ||
+        "";
+        
+      const slug = href.replace(/\/+$/, "").split("/").pop() || "";
 
-        return {
-          sourceId: slug,
-          title,
-          url: href.startsWith("http") ? href : `${location.origin}${href}`,
-          image,
-        };
-      });
-    }, SELECTORS);
+      return {
+        sourceId: slug,
+        title,
+        url: href.startsWith("http") ? href : `${BASE_URL}${href}`,
+        image,
+      };
+    }).get();
 
-    logger.info(
-      `[${SOURCE_NAME}] Found ${results.length} results for "${query}"`,
-    );
+    logger.info(`[${SOURCE_NAME}] Found ${results.length} results for "${query}"`);
     return results;
   } catch (error) {
     logger.error(`[${SOURCE_NAME}] Search error: ${error.message}`);
     return [];
-  } finally {
-    await page.close().catch(() => {});
   }
 }
 
@@ -124,46 +109,34 @@ async function searchAnime(query) {
  * @returns {Promise<Array<{ number: number, sourceEpisodeId: string, url: string }>>}
  */
 async function getEpisodes(animeUrl) {
-  const browser = await puppeteerPool.acquire();
-  const page = await browser.newPage();
-
   try {
     logger.info(`[${SOURCE_NAME}] Fetching episodes: ${animeUrl}`);
-    await page.goto(animeUrl, { waitUntil: "networkidle2", timeout: 30000 });
+    const { $ } = await fetchHtml(animeUrl);
 
-    const episodes = await page.evaluate((selectors) => {
-      const links = document.querySelectorAll(selectors.episodeItem);
-      const episodeLinks = [];
+    const episodeLinks = [];
+    $(SELECTORS.episodeItem).each((_, el) => {
+      const link = $(el);
+      const parent = link.closest(".episode-item");
+      const numParse = parent.attr("data-episode-number") || link.text().replace(/\D/g, "");
+      const number = parseInt(numParse, 10);
 
-      links.forEach((link) => {
-        const parent = link.closest(".episode-item");
-        // data-episode-number is the most reliable source
-        const numParse = parent?.getAttribute("data-episode-number") ||
-          link.textContent.replace(/\D/g, "");
-        const number = parseInt(numParse, 10);
+      const href = link.attr("href") || "";
+      const sourceEpisodeId = href.replace(/\/+$/, "").split("/").filter(Boolean).pop() || "";
 
-        const href = link.getAttribute("href") || "";
-        // sourceEpisodeId = full slug like "one-piece-episode-1156-english-subbed"
-        const sourceEpisodeId = href.replace(/\/+$/, "").split("/").filter(Boolean).pop() || "";
-
-        episodeLinks.push({
-          number: isNaN(number) ? episodeLinks.length + 1 : number,
-          title: link.textContent?.trim() || `Episode ${number}`,
-          sourceEpisodeId,
-          url: href.startsWith("http") ? href : location.origin + href,
-        });
+      episodeLinks.push({
+        number: isNaN(number) ? episodeLinks.length + 1 : number,
+        title: link.text().trim() || `Episode ${number}`,
+        sourceEpisodeId,
+        url: href.startsWith("http") ? href : BASE_URL + href,
       });
+    });
 
-      return episodeLinks.sort((a, b) => a.number - b.number);
-    }, SELECTORS);
-
-    logger.info(`[${SOURCE_NAME}] Found ${episodes.length} episodes`);
-    return episodes;
+    episodeLinks.sort((a, b) => a.number - b.number);
+    logger.info(`[${SOURCE_NAME}] Found ${episodeLinks.length} episodes`);
+    return episodeLinks;
   } catch (error) {
     logger.error(`[${SOURCE_NAME}] Episode list error: ${error.message}`);
     return [];
-  } finally {
-    await page.close().catch(() => {});
   }
 }
 
@@ -174,59 +147,41 @@ async function getEpisodes(animeUrl) {
  * @returns {Promise<Array<{ url: string, quality: string, server: string, type: string }>>}
  */
 async function getStreamingSources(episodeUrl) {
-  const browser = await puppeteerPool.acquire();
-  const page = await browser.newPage();
-
   try {
     logger.info(`[${SOURCE_NAME}] Fetching sources: ${episodeUrl}`);
-    await page.goto(episodeUrl, { waitUntil: "networkidle2", timeout: 30000 });
+    const { $ } = await fetchHtml(episodeUrl);
 
-    // Give dynamic player nav a moment to mount data attributes.
-    await page.waitForSelector("body", { timeout: 5000 }).catch(() => {});
+    const normalize = (raw) => {
+      if (!raw) return "";
+      if (raw.startsWith("//")) return `https:${raw}`;
+      if (raw.startsWith("/")) return `${BASE_URL}${raw}`;
+      return raw;
+    };
 
-    const sourcesFromServerList = await page.evaluate((selectors) => {
-      const normalize = (raw) => {
-        if (!raw) return "";
-        if (raw.startsWith("//")) return `https:${raw}`;
-        if (raw.startsWith("/")) return `${location.origin}${raw}`;
-        return raw;
-      };
+    const inferType = (url) => {
+      if (/\.m3u8(\?|$)/i.test(url)) return "hls";
+      if (/\.mp4(\?|$)/i.test(url)) return "mp4";
+      if (/\.webm(\?|$)/i.test(url)) return "webm";
+      return "iframe";
+    };
 
-      const inferType = (url) => {
-        if (/\.m3u8(\?|$)/i.test(url)) return "hls";
-        if (/\.mp4(\?|$)/i.test(url)) return "mp4";
-        if (/\.webm(\?|$)/i.test(url)) return "webm";
-        return "iframe";
-      };
+    const sourcesFromServerList = [];
+    $(SELECTORS.serverListItem).each((_, el) => {
+      const item = $(el);
+      const plainUrl = normalize(item.attr("data-plain-url") || "");
+      if (!plainUrl) return;
 
-      const items = Array.from(
-        document.querySelectorAll(selectors.serverListItem),
-      );
-      const out = [];
-
-      items.forEach((item) => {
-        const plainUrl = normalize(item.getAttribute("data-plain-url") || "");
-        // Skip items with no direct URL (active server uses iframe instead)
-        if (!plainUrl) return;
-
-        const serverLabel = (item.textContent || "").trim() || "unknown";
-        out.push({
-          url: plainUrl,
-          quality: "default",
-          server: serverLabel,
-          type: inferType(plainUrl),
-        });
+      const serverLabel = item.text().trim() || "unknown";
+      sourcesFromServerList.push({
+        url: plainUrl,
+        quality: "default",
+        server: serverLabel,
+        type: inferType(plainUrl),
       });
+    });
 
-      return out;
-    }, SELECTORS);
-
-    // ── Extract the video iframe src ──
-    const iframeSrc = await page.evaluate((selector) => {
-      const iframe = document.querySelector(selector);
-      return iframe?.getAttribute("src") || "";
-    }, SELECTORS.videoIframe);
-
+    // Extract the video iframe src
+    const iframeSrc = $(SELECTORS.videoIframe).attr("src") || "";
     const normalizedIframe = iframeSrc
       ? iframeSrc.startsWith("http")
         ? iframeSrc
@@ -247,27 +202,31 @@ async function getStreamingSources(episodeUrl) {
     const deduped = [];
     const seen = new Set();
 
-    for (const src of [
-      ...sourcesFromServerList,
-      ...(iframeSource ? [iframeSource] : []),
-    ]) {
+    const candidates = [...sourcesFromServerList, ...(iframeSource ? [iframeSource] : [])];
+    
+    for (const src of candidates) {
       const key = `${src.type}|${src.url}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      
-      // Smart Audio Detection: Gogoanime usually has "-dub" or "-english-dub" in the URL
+
+      let proxyTarget = src.url;
+      if (src.type === "iframe" && src.url.includes("megavid")) {
+        const apiBase = "/api/scraper";
+        proxyTarget = `${apiBase}/proxy?url=${encodeURIComponent(src.url)}&referer=${encodeURIComponent(BASE_URL)}`;
+      }
+
       const lowerUrl = src.url.toLowerCase();
       const lowerEpUrl = episodeUrl.toLowerCase();
       const isDub = lowerUrl.includes("-dub") || lowerEpUrl.includes("-dub");
-      
+
       deduped.push({
         ...src,
+        url: proxyTarget,
         audio: isDub ? "dub" : "sub",
-        quality: src.quality === "default" ? "HD" : src.quality
+        quality: src.quality === "default" ? "HD" : src.quality,
       });
     }
 
-    // Prefer direct streams before iframe embeds.
     deduped.sort((a, b) => {
       const rank = (type) =>
         type === "hls" || type === "mp4" || type === "webm" ? 0 : 1;
@@ -279,8 +238,6 @@ async function getStreamingSources(episodeUrl) {
   } catch (error) {
     logger.error(`[${SOURCE_NAME}] Source extraction error: ${error.message}`);
     return [];
-  } finally {
-    await page.close().catch(() => {});
   }
 }
 
@@ -291,13 +248,9 @@ async function getStreamingSources(episodeUrl) {
  * @returns {Promise<Array<{ sourceId: string, title: string, url: string, image: string }>>}
  */
 async function getCatalogAnime(maxPages = 25) {
-  const browser = await puppeteerPool.acquire();
-  const page = await browser.newPage();
-
   try {
     const all = [];
     const seen = new Set();
-
     let nextUrl = `${BASE_URL}${CATALOG_PATH}`;
     let pageCount = 0;
 
@@ -305,78 +258,65 @@ async function getCatalogAnime(maxPages = 25) {
       pageCount += 1;
       logger.info(`[${SOURCE_NAME}] Catalog page ${pageCount}: ${nextUrl}`);
 
-      await page.goto(nextUrl, { waitUntil: "networkidle2", timeout: 30000 });
-      await page
-        .waitForSelector(SELECTORS.catalogItem, { timeout: 10000 })
-        .catch(() => {});
+      const { $ } = await fetchHtml(nextUrl);
 
-      const { items, next } = await page.evaluate((selectors) => {
-        const extractSeriesId = (href) => {
-          const cleaned = href.replace(/\/+$/, "");
+      const items = [];
+      $(SELECTORS.catalogItem).each((_, el) => {
+        const card = $(el);
+        const linkEl = card.find(SELECTORS.catalogLink);
+        const imageEl = card.find(SELECTORS.catalogImage);
+
+        const href = linkEl.attr("href") || "";
+        const title =
+          linkEl.attr("oldtitle") ||
+          card.find('h2[itemprop="headline"]').text().trim() ||
+          "";
+
+        const url = href
+          ? href.startsWith("http")
+            ? href
+            : `${BASE_URL}${href}`
+          : "";
+
+        const image =
+          imageEl.attr("data-src") ||
+          imageEl.attr("src") ||
+          "";
+
+        const extractSeriesId = (h) => {
+          const cleaned = h.replace(/\/+$/, "");
           return cleaned.split("/").pop() || "";
         };
 
-        const cards = Array.from(
-          document.querySelectorAll(selectors.catalogItem),
-        );
-        const mapped = cards
-          .map((card) => {
-            const linkEl = card.querySelector(selectors.catalogLink);
-            const imageEl = card.querySelector(selectors.catalogImage);
-            const href = linkEl?.getAttribute("href") || "";
-            // Use oldtitle for clean title (no whitespace noise from child elements)
-            const title =
-              linkEl?.getAttribute("oldtitle") ||
-              card.querySelector('h2[itemprop="headline"]')?.textContent?.trim() ||
-              "";
-            const url = href
-              ? href.startsWith("http")
-                ? href
-                : `${location.origin}${href}`
-              : "";
-            // Support lazy-loaded images
-            const image =
-              imageEl?.getAttribute("data-src") ||
-              imageEl?.getAttribute("src") ||
-              "";
-            return {
-              sourceId: href ? extractSeriesId(href) : "",
-              title,
-              url,
-              image,
-            };
-          })
-          .filter((item) => item.sourceId && item.title && item.url);
+        const sourceId = href ? extractSeriesId(href) : "";
 
-        const nextLink = document.querySelector(selectors.catalogNextPage);
-        const nextHref = nextLink?.getAttribute("href") || "";
-        const nextUrl = nextHref
-          ? nextHref.startsWith("http")
-            ? nextHref
-            : `${location.origin}${nextHref}`
-          : "";
+        if (sourceId && title && url) {
+          items.push({ sourceId, title, url, image });
+        }
+      });
 
-        return { items: mapped, next: nextUrl };
-      }, SELECTORS);
+      const nextLink = $(SELECTORS.catalogNextPage).attr("href") || "";
+      const nextHref = nextLink
+        ? nextLink.startsWith("http")
+          ? nextLink
+          : `${BASE_URL}${nextLink}`
+        : "";
 
       for (const item of items) {
-        if (seen.has(item.sourceId)) continue;
-        seen.add(item.sourceId);
-        all.push(item);
+        if (!seen.has(item.sourceId)) {
+          seen.add(item.sourceId);
+          all.push(item);
+        }
       }
 
-      nextUrl = next;
+      nextUrl = nextHref;
     }
 
-    logger.info(
-      `[${SOURCE_NAME}] Catalog scrape yielded ${all.length} unique series`,
-    );
+    logger.info(`[${SOURCE_NAME}] Catalog scrape yielded ${all.length} unique series`);
     return all;
   } catch (error) {
     logger.error(`[${SOURCE_NAME}] Catalog scrape error: ${error.message}`);
     return [];
-  } finally {
-    await page.close().catch(() => {});
   }
 }
 
