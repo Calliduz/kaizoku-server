@@ -227,7 +227,7 @@ async function scrapeCatalog(options = {}) {
           $set: {
             sourceId: item.sourceId,
             scrapeSource: source.name,
-            updatedAt: new Date(), // Force updatedAt bump for listing
+            catalogUpdatedAt: new Date(), // Force catalog list bump
           },
         };
 

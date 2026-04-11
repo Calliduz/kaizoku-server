@@ -52,8 +52,10 @@ const getAll = asyncHandler(async (req, res) => {
       sortConfig = { rating: -1, totalEpisodes: -1 };
     else if (req.query.sort === "popular")
       sortConfig = { popularity: -1, rating: -1 };
-    else if (req.query.sort === "newest") sortConfig = { updatedAt: -1 };
-    else sortConfig = { updatedAt: -1 }; // Default to recently updated
+    else if (req.query.sort === "newest") sortConfig = { catalogUpdatedAt: -1 };
+    else sortConfig = { catalogUpdatedAt: -1 }; // Default to recently updated
+  } else {
+    sortConfig = { catalogUpdatedAt: -1 };
   }
 
   const [anime, total] = await Promise.all([

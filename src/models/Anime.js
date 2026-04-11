@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 /**
  * Anime schema — stores series-level metadata.
@@ -8,9 +8,9 @@ const mongoose = require('mongoose');
 const voiceActorSchema = new mongoose.Schema(
   {
     id: Number,
-    name: { type: String, default: '' },
-    nameNative: { type: String, default: '' },
-    image: { type: String, default: '' },
+    name: { type: String, default: "" },
+    nameNative: { type: String, default: "" },
+    image: { type: String, default: "" },
   },
   { _id: false },
 );
@@ -18,10 +18,10 @@ const voiceActorSchema = new mongoose.Schema(
 const characterSchema = new mongoose.Schema(
   {
     id: Number,
-    name: { type: String, default: '' },
-    nameNative: { type: String, default: '' },
-    image: { type: String, default: '' },
-    role: { type: String, default: 'SUPPORTING' }, // MAIN | SUPPORTING | BACKGROUND
+    name: { type: String, default: "" },
+    nameNative: { type: String, default: "" },
+    image: { type: String, default: "" },
+    role: { type: String, default: "SUPPORTING" }, // MAIN | SUPPORTING | BACKGROUND
     gender: { type: String, default: null },
     age: { type: String, default: null },
     voiceActors: { type: [voiceActorSchema], default: [] },
@@ -32,7 +32,7 @@ const characterSchema = new mongoose.Schema(
 const studioSchema = new mongoose.Schema(
   {
     id: Number,
-    name: { type: String, default: '' },
+    name: { type: String, default: "" },
     isAnimationStudio: { type: Boolean, default: false },
   },
   { _id: false },
@@ -40,9 +40,9 @@ const studioSchema = new mongoose.Schema(
 
 const trailerSchema = new mongoose.Schema(
   {
-    id: { type: String, default: '' },
-    site: { type: String, default: '' }, // 'youtube' | 'dailymotion'
-    thumbnail: { type: String, default: '' },
+    id: { type: String, default: "" },
+    site: { type: String, default: "" }, // 'youtube' | 'dailymotion'
+    thumbnail: { type: String, default: "" },
     url: { type: String, default: null },
   },
   { _id: false },
@@ -50,9 +50,9 @@ const trailerSchema = new mongoose.Schema(
 
 const externalLinkSchema = new mongoose.Schema(
   {
-    url: { type: String, default: '' },
-    site: { type: String, default: '' },
-    type: { type: String, default: '' },
+    url: { type: String, default: "" },
+    site: { type: String, default: "" },
+    type: { type: String, default: "" },
   },
   { _id: false },
 );
@@ -60,8 +60,8 @@ const externalLinkSchema = new mongoose.Schema(
 const recommendationSchema = new mongoose.Schema(
   {
     id: Number,
-    title: { type: String, default: '' },
-    coverImage: { type: String, default: '' },
+    title: { type: String, default: "" },
+    coverImage: { type: String, default: "" },
     averageScore: { type: Number, default: 0 },
   },
   { _id: false },
@@ -71,8 +71,8 @@ const relationSchema = new mongoose.Schema(
   {
     id: Number,
     relationType: String, // SEQUEL | PREQUEL | SIDE_STORY | etc.
-    title: { type: String, default: '' },
-    coverImage: { type: String, default: '' },
+    title: { type: String, default: "" },
+    coverImage: { type: String, default: "" },
     status: String,
     format: String,
   },
@@ -83,7 +83,7 @@ const animeSchema = new mongoose.Schema(
   {
     title: {
       type: String,
-      required: [true, 'Title is required'],
+      required: [true, "Title is required"],
       trim: true,
       index: true,
     },
@@ -102,7 +102,7 @@ const animeSchema = new mongoose.Schema(
     },
     coverImage: {
       type: String,
-      default: '',
+      default: "",
     },
     coverColor: {
       type: String,
@@ -110,11 +110,11 @@ const animeSchema = new mongoose.Schema(
     },
     bannerImage: {
       type: String,
-      default: '',
+      default: "",
     },
     description: {
       type: String,
-      default: '',
+      default: "",
     },
     genres: {
       type: [String],
@@ -126,8 +126,15 @@ const animeSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ['RELEASING', 'FINISHED', 'NOT_YET_RELEASED', 'CANCELLED', 'HIATUS', 'UNKNOWN'],
-      default: 'UNKNOWN',
+      enum: [
+        "RELEASING",
+        "FINISHED",
+        "NOT_YET_RELEASED",
+        "CANCELLED",
+        "HIATUS",
+        "UNKNOWN",
+      ],
+      default: "UNKNOWN",
     },
     format: {
       type: String,
@@ -217,28 +224,33 @@ const animeSchema = new mongoose.Schema(
     // Source scrape metadata
     sourceId: {
       type: String,
-      default: '',
+      default: "",
       index: true,
     },
     scrapeSource: {
       type: String,
-      default: '',
+      default: "",
+    },
+    catalogUpdatedAt: {
+      type: Date,
+      default: null,
+      index: true,
     },
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 /**
  * Generate a URL-friendly slug from the title before saving.
  */
-animeSchema.pre('validate', function (next) {
+animeSchema.pre("validate", function (next) {
   if (this.title && !this.slug) {
     this.slug = this.title
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "");
   }
   next();
 });
@@ -246,6 +258,6 @@ animeSchema.pre('validate', function (next) {
 /**
  * Text index for search functionality.
  */
-animeSchema.index({ title: 'text', altTitles: 'text', description: 'text' });
+animeSchema.index({ title: "text", altTitles: "text", description: "text" });
 
-module.exports = mongoose.model('Anime', animeSchema);
+module.exports = mongoose.model("Anime", animeSchema);
