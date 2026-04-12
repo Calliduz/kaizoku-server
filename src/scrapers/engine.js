@@ -74,18 +74,13 @@ function cleanTitle(title = "") {
     .replace(/\s+/g, " ")
     .replace(/episode\s+\d+/gi, "")
     .replace(/eps\s+\d+/gi, "")
-    .replace(/\s+0\d+\s+/g, " ")
-    .replace(/\s+0\d+$/g, " ")
     .replace(/\b(?:Season|S)\s*\d+\b/gi, "")
     .replace(/\d+(?:st|nd|rd|th)\s+Season/gi, "")
-    .replace(/\s+(?:Part|Pt)\s*\d+/gi, "")
-    .replace(/\s+Cour\s*\d+/gi, "")
     .replace(
       /\b(?:Subbed|Dubbed|Sub|Dub|English|Italiano|Español|Português)\b/gi,
       "",
     )
-    .replace(/\[\d+p\]/gi, "")
-    .replace(/[\[\]\(\)\-:]/g, " ") // Replace brackets, parens, hyphens, colons with space
+    .replace(/[\[\]\(\)]/g, " ") // Preserved colons/hyphens to avoid smashing valid short titles together
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -151,7 +146,7 @@ async function scrape(query, options = {}) {
         const filter = {
           $or: [
             ...(match && match.id ? [{ anilistId: match.id }] : []),
-            { slug: slug },
+            ...(slug.length >= 6 ? [{ slug: slug }] : []),
             { sourceId: item.sourceId, scrapeSource: source.name },
           ],
         };
@@ -215,8 +210,19 @@ async function scrapeCatalog(options = {}) {
         source.getCatalogAnime(maxPages),
       );
 
+      const baseTime = Date.now();
+      let index = 0;
+
       for (const item of catalogItems) {
-        const anilistResults = await searchAniList(item.title);
+        let anilistResults = [];
+        try {
+          anilistResults = await searchAniList(item.title);
+        } catch (e) {
+          logger.error(
+            `[Engine] AniList search failed for ${item.title}: ${e.message}`,
+          );
+        }
+
         const { match } = findBestMatch(item.title, anilistResults);
 
         const cleanedTitle = cleanTitle(item.title);
@@ -227,7 +233,7 @@ async function scrapeCatalog(options = {}) {
           $set: {
             sourceId: item.sourceId,
             scrapeSource: source.name,
-            catalogUpdatedAt: new Date(), // Force catalog list bump
+            catalogUpdatedAt: new Date(baseTime - index * 1000), // Force catalog list bump
           },
         };
 
@@ -247,21 +253,60 @@ async function scrapeCatalog(options = {}) {
         const filter = {
           $or: [
             ...(match && match.id ? [{ anilistId: match.id }] : []),
-            { slug: slug },
+            ...(slug.length >= 6 ? [{ slug: slug }] : []),
             { sourceId: item.sourceId, scrapeSource: source.name },
           ],
         };
 
-        const anime = await Anime.findOneAndUpdate(filter, updateDoc, {
+        let anime = await Anime.findOneAndUpdate(filter, updateDoc, {
           upsert: true,
           new: true,
           runValidators: true,
         });
 
+        // Background Enrichment for missing high-quality data and Logos
+        setTimeout(
+          async () => {
+            try {
+              let currentAnimeId = anime.anilistId || (match ? match.id : null);
+
+              if (!currentAnimeId || !anime.description) {
+                const fallbackResults = await searchAniList(anime.title, 3);
+                if (fallbackResults && fallbackResults.length > 0) {
+                  const enrichedData = normalizeAniListData(fallbackResults[0]);
+                  await Anime.findByIdAndUpdate(anime._id, {
+                    $set: enrichedData,
+                  });
+                  currentAnimeId =
+                    enrichedData.anilistId || fallbackResults[0].id;
+                  logger.info(
+                    `[Engine] Background enriched metadata for "${anime.title}"`,
+                  );
+                }
+              }
+
+              // Fetch high-res logo from Fanart/Anify if we now have anilistId but no logo
+              if (currentAnimeId && !anime.logo) {
+                const logoUrl =
+                  await require("../utils/fanart").fetchLogo(currentAnimeId);
+                if (logoUrl) {
+                  await Anime.findByIdAndUpdate(anime._id, {
+                    $set: { logo: logoUrl },
+                  });
+                }
+              }
+            } catch (e) {
+              // Ignore background failure
+            }
+          },
+          5000 + index * 500,
+        ); // Delay staggered by 500ms per item to prevent hammering Anify API
+
         if (fetchEpisodes && item.url) {
           await scrapeEpisodes(anime._id, item.url, source);
         }
 
+        index++;
         results.push(anime);
       }
     } catch (error) {

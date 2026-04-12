@@ -1,9 +1,9 @@
-const createApp = require('./src/app');
-const connectDB = require('./src/config/db');
-const env = require('./src/config/env');
-const logger = require('./src/utils/logger');
-const puppeteerPool = require('./src/utils/puppeteerPool');
-const scheduler = require('./src/utils/scheduler');
+const createApp = require("./src/app");
+const connectDB = require("./src/config/db");
+const env = require("./src/config/env");
+const logger = require("./src/utils/logger");
+const puppeteerPool = require("./src/utils/puppeteerPool");
+const scheduler = require("./src/utils/scheduler");
 
 /**
  * Server entry point.
@@ -19,13 +19,17 @@ async function start() {
   const app = createApp();
 
   const server = app.listen(env.PORT, () => {
-    logger.info(`Kaizoku API running on http://localhost:${env.PORT} [${env.NODE_ENV}]`);
-    
-    // Start background catalog sync (every 30 mins) if enabled
+    logger.info(
+      `Kaizoku API running on http://localhost:${env.PORT} [${env.NODE_ENV}]`,
+    );
+
+    // Start background catalog sync (every 120 mins) if enabled
     if (env.ENABLE_SCHEDULER) {
-      scheduler.startCatalogSync(30);
+      scheduler.startCatalogSync(120);
     } else {
-      logger.info("[Scheduler] Background catalog sync is disabled (ENABLE_SCHEDULER=false)");
+      logger.info(
+        "[Scheduler] Background catalog sync is disabled (ENABLE_SCHEDULER=false)",
+      );
     }
   });
 
@@ -35,13 +39,13 @@ async function start() {
     server.close(async () => {
       await puppeteerPool.shutdown();
       scheduler.stopCatalogSync();
-      logger.info('Server closed.');
+      logger.info("Server closed.");
       process.exit(0);
     });
   };
 
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
 start().catch((error) => {

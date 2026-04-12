@@ -22,10 +22,13 @@ const getAll = asyncHandler(async (req, res) => {
   const filter = {};
 
   if (req.query.search) {
-    const searchRegex = new RegExp(
-      req.query.search.trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&"),
-      "i",
-    );
+    const searchTerms = req.query.search
+      .trim()
+      .split(/\s+/)
+      .map((term) => term.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&"));
+    const lookaheadRegex = searchTerms.map((term) => `(?=.*${term})`).join("");
+    const searchRegex = new RegExp(`^${lookaheadRegex}.*$`, "i");
+
     filter.$or = [{ title: searchRegex }, { altTitles: searchRegex }];
   }
 

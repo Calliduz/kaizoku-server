@@ -1,10 +1,10 @@
-const mongoose = require('mongoose');
-const Anime = require('../models/Anime');
-const Episode = require('../models/Episode');
-const { searchAniList, normalizeAniListData } = require('../scrapers/anilist');
-const { findBestMatch } = require('../scrapers/matcher');
-const env = require('../config/env');
-const logger = require('../utils/logger');
+const mongoose = require("mongoose");
+const Anime = require("../models/Anime");
+const Episode = require("../models/Episode");
+const { searchAniList, normalizeAniListData } = require("../scrapers/anilist");
+const { findBestMatch } = require("../scrapers/matcher");
+const env = require("../config/env");
+const logger = require("../utils/logger");
 
 function toSlug(value = "") {
   return value
@@ -18,15 +18,13 @@ function cleanTitle(title = "") {
     .replace(/\s+/g, " ")
     .replace(/episode\s+\d+/gi, "")
     .replace(/eps\s+\d+/gi, "")
-    .replace(/\s+0\d+\s+/g, " ")
-    .replace(/\s+0\d+$/g, " ")
     .replace(/\b(?:Season|S)\s*\d+\b/gi, "")
     .replace(/\d+(?:st|nd|rd|th)\s+Season/gi, "")
-    .replace(/\s+(?:Part|Pt)\s*\d+/gi, "")
-    .replace(/\s+Cour\s*\d+/gi, "")
-    .replace(/\b(?:Subbed|Dubbed|Sub|Dub|English|Italiano|Español|Português)\b/gi, "")
-    .replace(/\[\d+p\]/gi, "")
-    .replace(/[\[\]\(\)\-:]/g, " ") 
+    .replace(
+      /\b(?:Subbed|Dubbed|Sub|Dub|English|Italiano|Español|Português)\b/gi,
+      "",
+    )
+    .replace(/[\[\]\(\)]/g, " ") // Preserved colons/hyphens to avoid smashing valid short titles together
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -34,12 +32,14 @@ function cleanTitle(title = "") {
 async function deduplicate() {
   try {
     await mongoose.connect(env.MONGODB_URI);
-    logger.info('Connected to MongoDB for deep deduplication');
+    logger.info("Connected to MongoDB for deep deduplication");
 
     // 1. First Pass: Re-link missing AniList IDs
     const missingMetadata = await Anime.find({ anilistId: { $exists: false } });
     if (missingMetadata.length > 0) {
-      logger.info(`Attempting to link ${missingMetadata.length} records to AniList...`);
+      logger.info(
+        `Attempting to link ${missingMetadata.length} records to AniList...`,
+      );
       for (const anime of missingMetadata) {
         try {
           const results = await searchAniList(anime.title);
@@ -47,10 +47,10 @@ async function deduplicate() {
           if (match) {
             logger.info(`Linked "${anime.title}" to AniList ID: ${match.id}`);
             await Anime.findByIdAndUpdate(anime._id, {
-              $set: { 
+              $set: {
                 anilistId: match.id,
-                ...normalizeAniListData(match)
-              }
+                ...normalizeAniListData(match),
+              },
             });
           }
         } catch (e) {
@@ -70,11 +70,15 @@ async function deduplicate() {
         if (!anilistMap[anime.anilistId]) anilistMap[anime.anilistId] = [];
         anilistMap[anime.anilistId].push(anime);
       } else {
-        // Priority 2: Slug fallback
+        // Priority 2: Slug fallback ONLY IF SLUG IS LONG ENOUGH
+        // Prevents nuking short names like "One Piece"
         const normalizedTitle = cleanTitle(anime.title);
         const normalizedSlug = toSlug(normalizedTitle);
-        if (!slugMap[normalizedSlug]) slugMap[normalizedSlug] = [];
-        slugMap[normalizedSlug].push(anime);
+        if (normalizedSlug.length >= 6) {
+          // Must be at least 6 length to merge via text
+          if (!slugMap[normalizedSlug]) slugMap[normalizedSlug] = [];
+          slugMap[normalizedSlug].push(anime);
+        }
       }
     }
 
@@ -86,7 +90,7 @@ async function deduplicate() {
         const duplicates = map[key];
         if (duplicates.length > 1) {
           logger.info(`Found ${duplicates.length} duplicates for key: ${key}`);
-          
+
           duplicates.sort((a, b) => {
             if (a.anilistId && !b.anilistId) return -1;
             if (!a.anilistId && b.anilistId) return 1;
@@ -100,11 +104,16 @@ async function deduplicate() {
           for (const duplicate of toDelete) {
             const dupEpisodes = await Episode.find({ animeId: duplicate._id });
             for (const ep of dupEpisodes) {
-              const exists = await Episode.findOne({ animeId: primary._id, number: ep.number });
+              const exists = await Episode.findOne({
+                animeId: primary._id,
+                number: ep.number,
+              });
               if (exists) {
                 await Episode.findByIdAndDelete(ep._id);
               } else {
-                await Episode.findByIdAndUpdate(ep._id, { $set: { animeId: primary._id } });
+                await Episode.findByIdAndUpdate(ep._id, {
+                  $set: { animeId: primary._id },
+                });
                 mergedEpisodesCount++;
               }
             }
@@ -118,7 +127,9 @@ async function deduplicate() {
     await processGroups(anilistMap);
     await processGroups(slugMap);
 
-    logger.info(`Deduplication complete! Deleted ${deletedCount} records and merged ${mergedEpisodesCount} episodes.`);
+    logger.info(
+      `Deduplication complete! Deleted ${deletedCount} records and merged ${mergedEpisodesCount} episodes.`,
+    );
   } catch (error) {
     logger.error(`Deduplication failed: ${error.message}`);
   } finally {
