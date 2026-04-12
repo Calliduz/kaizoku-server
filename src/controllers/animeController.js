@@ -248,20 +248,38 @@ const getLogo = asyncHandler(async (req, res) => {
   }
 
   // Check if we already have it in DB
-  if (anime.logo && anime.logo.trim() !== "") {
-    return res.json({ success: true, data: anime.logo });
+  if (anime.logo && anime.logo.trim() !== "" && anime.fanartBackground && anime.fanartBackground.trim() !== "") {
+    return res.json({ success: true, data: anime.logo, background: anime.fanartBackground });
   }
 
   // Fetch using fanart
-  const logoUrl = await fanart.getLogoByAnilistId(anime.anilistId);
+  const { logoUrl, bgUrl } = await fanart.getFanartAssetsByAnilistId(
+    anime.anilistId,
+  );
 
-  if (logoUrl) {
+  let updated = false;
+  if (logoUrl && anime.logo !== logoUrl) {
     anime.logo = logoUrl;
-    await anime.save();
-    return res.json({ success: true, data: logoUrl });
+    updated = true;
+  }
+  if (bgUrl && anime.fanartBackground !== bgUrl) {
+    anime.fanartBackground = bgUrl;
+    updated = true;
   }
 
-  return res.status(404).json({ success: false, error: "Logo not found" });
+  if (updated) {
+    await anime.save();
+  }
+
+  if (anime.logo || anime.fanartBackground) {
+    return res.json({
+      success: true,
+      data: anime.logo,
+      background: anime.fanartBackground,
+    });
+  }
+
+  return res.status(404).json({ success: false, error: "Assets not found" });
 });
 
 module.exports.getLogo = getLogo;

@@ -66,19 +66,43 @@ async function fetchLogoFromFanartTV(tvdbId) {
     const firstClear = res.data.clearart?.[0];
 
     const selectedLogo = enHdtv || firstHdtv || enClear || firstClear;
-    if (selectedLogo) return selectedLogo.url;
+    const logoUrl = selectedLogo ? selectedLogo.url : null;
+
+    const tvthumbs = res.data.tvthumb || [];
+    const backgrounds = res.data.showbackground || [];
+    const enThumb = tvthumbs.find((t) => t.lang === "en" || t.lang === "00" || t.lang === "");
+    const firstThumb = tvthumbs[0];
+    const enBg = backgrounds.find((b) => b.lang === "en" || b.lang === "00" || b.lang === "");
+    const firstBg = backgrounds[0];
+
+    const selectedBg = enThumb || firstThumb || enBg || firstBg;
+    const bgUrl = selectedBg ? selectedBg.url : null;
+
+    return { logoUrl, bgUrl };
   } catch (e) {}
-  return null;
+  return { logoUrl: null, bgUrl: null };
+}
+
+async function getFanartAssetsByAnilistId(anilistId) {
+  const tvdbId = await getTVDBIdFromAniList(anilistId);
+  if (tvdbId) return await fetchLogoFromFanartTV(tvdbId);
+  return { logoUrl: null, bgUrl: null };
 }
 
 async function getLogoByAnilistId(anilistId) {
-  const tvdbId = await getTVDBIdFromAniList(anilistId);
-  if (tvdbId) return await fetchLogoFromFanartTV(tvdbId);
-  return null;
+  const { logoUrl } = await getFanartAssetsByAnilistId(anilistId);
+  return logoUrl;
+}
+
+async function getBackgroundByAnilistId(anilistId) {
+  const { bgUrl } = await getFanartAssetsByAnilistId(anilistId);
+  return bgUrl;
 }
 
 module.exports = {
   getLogoByAnilistId,
+  getBackgroundByAnilistId,
+  getFanartAssetsByAnilistId,
   getTVDBIdFromAniList,
   fetchLogoFromFanartTV,
 };

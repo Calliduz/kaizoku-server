@@ -112,6 +112,10 @@ const animeSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    fanartBackground: {
+      type: String,
+      default: "",
+    },
     logo: {
       type: String,
       default: "",
