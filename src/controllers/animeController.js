@@ -56,6 +56,8 @@ const getAll = asyncHandler(async (req, res) => {
       sortConfig = { rating: -1, totalEpisodes: -1 };
     else if (req.query.sort === "popular")
       sortConfig = { popularity: -1, rating: -1 };
+    else if (req.query.sort === "popularity")
+      sortConfig = { catalogUpdatedAt: -1, popularity: -1 }; // Trending
     else if (req.query.sort === "newest") sortConfig = { catalogUpdatedAt: -1 };
     else sortConfig = { catalogUpdatedAt: -1 }; // Default to recently updated
   } else {
@@ -63,7 +65,32 @@ const getAll = asyncHandler(async (req, res) => {
   }
 
   const [anime, total] = await Promise.all([
-    Anime.find(filter).sort(sortConfig).skip(skip).limit(limit).lean(),
+    Anime.aggregate([
+      { $match: filter },
+      { $sort: sortConfig },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        $lookup: {
+          from: "episodes",
+          let: { animeId: "$_id" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$animeId", "$$animeId"] } } },
+            { $sort: { number: -1 } },
+            { $limit: 1 },
+            { $project: { number: 1 } }
+          ],
+          as: "latestEpisodeData"
+        }
+      },
+      {
+        $addFields: {
+          latestEpisode: { $arrayElemAt: ["$latestEpisodeData.number", 0] },
+          id: "$_id"
+        }
+      },
+      { $project: { latestEpisodeData: 0 } }
+    ]),
     Anime.countDocuments(filter),
   ]);
 
