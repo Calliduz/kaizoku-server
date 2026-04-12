@@ -7,6 +7,7 @@ const {
 } = require("../scrapers/engine");
 const { searchAniList, normalizeAniListData } = require("../scrapers/anilist");
 const asyncHandler = require("../middleware/asyncHandler");
+const fanart = require("../utils/fanart");
 
 /**
  * @desc    Get all anime (paginated, searchable)
@@ -206,3 +207,33 @@ module.exports = {
   triggerScrape,
   getSuggestions,
 };
+
+/**
+ * @desc    Get anime logo
+ * @route   GET /api/anime/:id/logo
+ */
+const getLogo = asyncHandler(async (req, res) => {
+  const anime = await Anime.findById(req.params.id);
+
+  if (!anime) {
+    return res.status(404).json({ success: false, error: "Anime not found" });
+  }
+
+  // Check if we already have it in DB
+  if (anime.logo && anime.logo.trim() !== "") {
+    return res.json({ success: true, data: anime.logo });
+  }
+
+  // Fetch using fanart
+  const logoUrl = await fanart.getLogoByAnilistId(anime.anilistId);
+
+  if (logoUrl) {
+    anime.logo = logoUrl;
+    await anime.save();
+    return res.json({ success: true, data: logoUrl });
+  }
+
+  return res.status(404).json({ success: false, error: "Logo not found" });
+});
+
+module.exports.getLogo = getLogo;

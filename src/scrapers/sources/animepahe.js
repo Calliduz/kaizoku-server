@@ -20,6 +20,8 @@ const requestHeaders = {
   Referer: BASE_URL,
 };
 
+let cachedCookies = "";
+
 /**
  * Wait for DDOS-GUARD or similar challenge bypass
  */
@@ -101,7 +103,9 @@ async function searchAnime(query) {
         timeout: 8000,
       })
       .catch(() => {});
-
+    const cookies = await page.cookies();
+    if (cookies.length > 0)
+      cachedCookies = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     const responseText = await page.evaluate(() => document.body.innerText);
     const response = JSON.parse(responseText);
 
@@ -138,9 +142,10 @@ async function getEpisodes(animeUrl) {
     }));
 
   try {
-    const response = await axios.get(episodesApiUrl, {
-      headers: requestHeaders,
-    });
+    const headers = { ...requestHeaders };
+    if (cachedCookies) headers.Cookie = cachedCookies;
+
+    const response = await axios.get(episodesApiUrl, { headers });
     if (response.data && Array.isArray(response.data.data)) {
       let eps = [...response.data.data];
       const lastPage = response.data.last_page || 1;
@@ -149,7 +154,7 @@ async function getEpisodes(animeUrl) {
         try {
           const nextResp = await axios.get(
             episodesApiUrl.replace("page=1", `page=${p}`),
-            { headers: requestHeaders },
+            { headers },
           );
           if (nextResp.data?.data) {
             eps = eps.concat(nextResp.data.data);
@@ -189,7 +194,9 @@ async function getEpisodes(animeUrl) {
           timeout: 8000,
         })
         .catch(() => {});
-
+      const cookies = await page.cookies();
+      if (cookies.length > 0)
+        cachedCookies = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
       const responseText = await page.evaluate(() => document.body.innerText);
       try {
         const responseJson = JSON.parse(responseText);
