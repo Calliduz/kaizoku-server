@@ -70,12 +70,12 @@ async function fetchLogoFromFanartTV(tvdbId) {
 
     const tvthumbs = res.data.tvthumb || [];
     const backgrounds = res.data.showbackground || [];
-    const enThumb = tvthumbs.find((t) => t.lang === "en" || t.lang === "00" || t.lang === "");
-    const firstThumb = tvthumbs[0];
-    const enBg = backgrounds.find((b) => b.lang === "en" || b.lang === "00" || b.lang === "");
+    const enBg = backgrounds.find(
+      (b) => b.lang === "en" || b.lang === "00" || b.lang === "",
+    );
     const firstBg = backgrounds[0];
 
-    const selectedBg = enThumb || firstThumb || enBg || firstBg;
+    const selectedBg = enBg || firstBg;
     const bgUrl = selectedBg ? selectedBg.url : null;
 
     return { logoUrl, bgUrl };
