@@ -56,8 +56,12 @@ async function fetchLogoFromFanartTV(tvdbId) {
     );
 
     // Prefer English logos
-    const enHdtv = res.data.hdtvlogo?.find((l) => l.lang === "en" || l.lang === "00" || l.lang === "");
-    const enClear = res.data.clearart?.find((l) => l.lang === "en" || l.lang === "00" || l.lang === "");
+    const enHdtv = res.data.hdtvlogo?.find(
+      (l) => l.lang === "en" || l.lang === "00" || l.lang === "",
+    );
+    const enClear = res.data.clearart?.find(
+      (l) => l.lang === "en" || l.lang === "00" || l.lang === "",
+    );
     const firstHdtv = res.data.hdtvlogo?.[0];
     const firstClear = res.data.clearart?.[0];
 

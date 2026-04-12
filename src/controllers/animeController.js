@@ -78,18 +78,18 @@ const getAll = asyncHandler(async (req, res) => {
             { $match: { $expr: { $eq: ["$animeId", "$$animeId"] } } },
             { $sort: { number: -1 } },
             { $limit: 1 },
-            { $project: { number: 1 } }
+            { $project: { number: 1 } },
           ],
-          as: "latestEpisodeData"
-        }
+          as: "latestEpisodeData",
+        },
       },
       {
         $addFields: {
           latestEpisode: { $arrayElemAt: ["$latestEpisodeData.number", 0] },
-          id: "$_id"
-        }
+          id: "$_id",
+        },
       },
-      { $project: { latestEpisodeData: 0 } }
+      { $project: { latestEpisodeData: 0 } },
     ]),
     Anime.countDocuments(filter),
   ]);
