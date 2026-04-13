@@ -38,94 +38,111 @@ async function runDeduplication() {
     const start = Date.now();
     logger.info("[Deduplication] Starting deep cleanup pass...");
 
-    // 1. First Pass: Re-link missing AniList IDs
-    const missingMetadata = await Anime.find({ anilistId: { $exists: false } });
-    if (missingMetadata.length > 0) {
-      logger.info(
-        `[Deduplication] Attempting to link ${missingMetadata.length} records to AniList...`,
-      );
-      for (const anime of missingMetadata) {
-        try {
-          const results = await searchAniList(anime.title);
-          const { match } = findBestMatch(anime.title, results);
-          if (match) {
-            logger.info(`[Deduplication] Linked "${anime.title}" to AniList ID: ${match.id}`);
-            await Anime.findByIdAndUpdate(anime._id, {
-              $set: {
-                anilistId: match.id,
-                ...normalizeAniListData(match),
-              },
-            });
-          }
-        } catch (e) {
-          // Skip failures
+    // 1. First Pass: Re-link missing AniList IDs (Memory efficient using Cursor)
+    const missingMetadataCursor = Anime.find({ anilistId: null }).cursor();
+    let linkedCount = 0;
+    
+    for (let anime = await missingMetadataCursor.next(); anime != null; anime = await missingMetadataCursor.next()) {
+      try {
+        const results = await searchAniList(anime.title);
+        const { match } = findBestMatch(anime.title, results);
+        if (match) {
+          logger.info(`[Deduplication] Linked "${anime.title}" to AniList ID: ${match.id}`);
+          await Anime.findByIdAndUpdate(anime._id, {
+            $set: {
+              anilistId: match.id,
+              ...normalizeAniListData(match),
+            },
+          });
+          linkedCount++;
         }
+      } catch (e) {
+        // Skip failures for individual items
       }
     }
+    if (linkedCount > 0) logger.info(`[Deduplication] Linked ${linkedCount} records to AniList.`);
 
-    // 2. Second Pass: Group and Merge by AniList ID
-    const allAnime = await Anime.find({});
-    const anilistMap = {};
-    const slugMap = {};
+    // 2. Second Pass: Group and Merge by AniList ID (Using Aggregation - zero heap overhead for grouping)
+    const anilistDuplicates = await Anime.aggregate([
+      { $match: { anilistId: { $ne: null } } },
+      { $group: { _id: "$anilistId", count: { $sum: 1 }, ids: { $push: "$_id" } } },
+      { $match: { count: { $gt: 1 } } }
+    ]);
 
-    for (const anime of allAnime) {
-      if (anime.anilistId) {
-        if (!anilistMap[anime.anilistId]) anilistMap[anime.anilistId] = [];
-        anilistMap[anime.anilistId].push(anime);
-      } else {
-        const normalizedTitle = cleanTitle(anime.title);
-        const normalizedSlug = toSlug(normalizedTitle);
-        if (normalizedSlug.length >= 6) {
-          if (!slugMap[normalizedSlug]) slugMap[normalizedSlug] = [];
-          slugMap[normalizedSlug].push(anime);
-        }
+    // 3. Third Pass: Group by Slug (Using Cursor to build lightweight ID map)
+    const slugMap = new Map();
+    const slugCursor = Anime.find({ anilistId: null }, { _id: 1, title: 1 }).cursor();
+    
+    for (let anime = await slugCursor.next(); anime != null; anime = await slugCursor.next()) {
+      const normalizedTitle = cleanTitle(anime.title);
+      const normalizedSlug = toSlug(normalizedTitle);
+      if (normalizedSlug.length >= 6) {
+        if (!slugMap.has(normalizedSlug)) slugMap.set(normalizedSlug, []);
+        slugMap.get(normalizedSlug).push(anime._id);
       }
     }
 
     let deletedCount = 0;
     let mergedEpisodesCount = 0;
 
-    const processGroups = async (map) => {
-      for (const key in map) {
-        const duplicates = map[key];
-        if (duplicates.length > 1) {
-          logger.info(`[Deduplication] Found ${duplicates.length} duplicates for key: ${key}`);
+    /**
+     * Optimized Merge: Works with IDs to keep memory usage low.
+     */
+    const mergeDuplicates = async (ids) => {
+      if (ids.length <= 1) return;
 
-          duplicates.sort((a, b) => {
-            if (a.anilistId && !b.anilistId) return -1;
-            if (!a.anilistId && b.anilistId) return 1;
-            if (a.description?.length > b.description?.length) return -1;
-            return 0;
-          });
+      // Fetch minimal info for sorting
+      const duplicates = await Anime.find({ _id: { $in: ids } })
+        .select("_id anilistId description title")
+        .lean();
 
-          const primary = duplicates[0];
-          const toDelete = duplicates.slice(1);
+      duplicates.sort((a, b) => {
+        if (a.anilistId && !b.anilistId) return -1;
+        if (!a.anilistId && b.anilistId) return 1;
+        if ((a.description?.length || 0) > (b.description?.length || 0)) return -1;
+        return 0;
+      });
 
-          for (const duplicate of toDelete) {
-            const dupEpisodes = await Episode.find({ animeId: duplicate._id });
-            for (const ep of dupEpisodes) {
-              const exists = await Episode.findOne({
-                animeId: primary._id,
-                number: ep.number,
-              });
-              if (exists) {
-                await Episode.findByIdAndDelete(ep._id);
-              } else {
-                await Episode.findByIdAndUpdate(ep._id, {
-                  $set: { animeId: primary._id },
-                });
-                mergedEpisodesCount++;
-              }
-            }
-            await Anime.findByIdAndDelete(duplicate._id);
-            deletedCount++;
+      const primary = duplicates[0];
+      const toDelete = duplicates.slice(1);
+
+      for (const duplicate of toDelete) {
+        // Process episodes in batches via cursor
+        const epCursor = Episode.find({ animeId: duplicate._id }).cursor();
+        
+        for (let ep = await epCursor.next(); ep != null; ep = await epCursor.next()) {
+          const exists = await Episode.findOne({
+            animeId: primary._id,
+            number: ep.number,
+          }).select("_id").lean();
+
+          if (exists) {
+            await Episode.findByIdAndDelete(ep._id);
+          } else {
+            await Episode.findByIdAndUpdate(ep._id, {
+              $set: { animeId: primary._id },
+            });
+            mergedEpisodesCount++;
           }
         }
+        await Anime.findByIdAndDelete(duplicate._id);
+        deletedCount++;
       }
     };
 
-    await processGroups(anilistMap);
-    await processGroups(slugMap);
+    // Process AniList groups
+    for (const group of anilistDuplicates) {
+      logger.info(`[Deduplication] Merging ${group.ids.length} duplicates for AniList ID: ${group._id}`);
+      await mergeDuplicates(group.ids);
+    }
+
+    // Process Slug groups
+    for (const [slug, ids] of slugMap.entries()) {
+      if (ids.length > 1) {
+        logger.info(`[Deduplication] Merging ${ids.length} duplicates for Slug: ${slug}`);
+        await mergeDuplicates(ids);
+      }
+    }
 
     const duration = ((Date.now() - start) / 1000).toFixed(2);
     logger.info(
