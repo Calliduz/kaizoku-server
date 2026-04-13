@@ -8,6 +8,7 @@
     "dev": "nodemon server.js",
     "scrape": "node -e \"require('./src/scrapers/engine').runScrape()\"",
     "seed": "node src/scripts/seed.js",
+    "deduplicate": "node src/scripts/deduplicate.js",
     "postinstall": "npx puppeteer browsers install chrome"
   },
   "keywords": [

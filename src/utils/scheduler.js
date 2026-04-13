@@ -1,5 +1,4 @@
 const { scrapeCatalog } = require("../scrapers/engine");
-const { runDeduplication } = require("../scripts/deduplicate");
 const logger = require("./logger");
 
 /**
@@ -43,9 +42,6 @@ function startCatalogSync(intervalMinutes = 120) {
       logger.info(
         `[Scheduler] Sync complete. Processed ${results.length} titles.`,
       );
-
-      // Run deduplication to clean up any potential duplicates from the new scrape
-      await runDeduplication();
     } catch (error) {
       logger.error(`[Scheduler] Periodic sync failed: ${error.message}`);
     }
