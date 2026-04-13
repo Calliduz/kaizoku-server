@@ -85,11 +85,13 @@ async function runDeduplication() {
     let deletedCount = 0;
     let mergedEpisodesCount = 0;
 
-    const processGroups = async (map) => {
-      for (const key in map) {
+    const processGroups = async (map, name) => {
+      const keys = Object.keys(map);
+      logger.info(`Checking ${keys.length} groups for ${name}...`);
+      for (const key of keys) {
         const duplicates = map[key];
         if (duplicates.length > 1) {
-          logger.info(`Found ${duplicates.length} duplicates for key: ${key}`);
+          logger.info(`[${name}] Found ${duplicates.length} duplicates for key: ${key} (${duplicates.map(d => d.title).join(", ")})`);
 
           duplicates.sort((a, b) => {
             if (a.anilistId && !b.anilistId) return -1;
@@ -102,6 +104,7 @@ async function runDeduplication() {
           const toDelete = duplicates.slice(1);
 
           for (const duplicate of toDelete) {
+            logger.info(`[${name}] Merging duplicate "${duplicate.title}" (${duplicate._id}) into primary "${primary.title}" (${primary._id})`);
             const dupEpisodes = await Episode.find({ animeId: duplicate._id });
             for (const ep of dupEpisodes) {
               const exists = await Episode.findOne({
@@ -124,8 +127,8 @@ async function runDeduplication() {
       }
     };
 
-    await processGroups(anilistMap);
-    await processGroups(slugMap);
+    await processGroups(anilistMap, "AniList ID");
+    await processGroups(slugMap, "Slug Fallback");
 
     logger.info(
       `Deduplication complete! Deleted ${deletedCount} records and merged ${mergedEpisodesCount} episodes.`,

@@ -152,6 +152,7 @@ async function scrape(query, options = {}) {
           $or: [
             ...(match && match.id ? [{ anilistId: match.id }] : []),
             ...(slug.length >= 6 ? [{ slug: slug }] : []),
+            { title: cleanedTitle },
             { sourceId: item.sourceId, scrapeSource: source.name },
           ],
         };
@@ -259,6 +260,7 @@ async function scrapeCatalog(options = {}) {
           $or: [
             ...(match && match.id ? [{ anilistId: match.id }] : []),
             ...(slug.length >= 6 ? [{ slug: slug }] : []),
+            { title: cleanedTitle },
             { sourceId: item.sourceId, scrapeSource: source.name },
           ],
         };
