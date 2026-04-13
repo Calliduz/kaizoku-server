@@ -68,7 +68,48 @@ const getAll = asyncHandler(async (req, res) => {
   const [anime, total] = await Promise.all([
     Anime.aggregate([
       { $match: filter },
-      { $sort: sortConfig },
+      // Relevance Scoring
+      {
+        $addFields: {
+          searchScore: {
+            $add: [
+              // Exact matches get massive boost
+              {
+                $cond: [
+                  { $eq: [{ $toLower: "$title" }, (req.query.search || "").toLowerCase().trim()] },
+                  200,
+                  0
+                ]
+              },
+              // Starts with match boost
+              {
+                $cond: [
+                  { 
+                    $regexMatch: { 
+                      input: "$title", 
+                      regex: new RegExp(`^${(req.query.search || "").trim().replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&")}`, "i") 
+                    } 
+                  },
+                  50,
+                  0
+                ]
+              },
+              // Popularity scaling (normalized)
+              { $divide: [{ $ifNull: ["$popularity", 0] }, 1000] },
+              // Main series boost (favor TV over Specials/ONA/etc)
+              { $cond: [{ $eq: ["$format", "TV"] }, 10, 0] },
+              // Long-running series boost
+              { $cond: [{ $gt: ["$totalEpisodes", 12] }, 15, 0] }
+            ]
+          }
+        }
+      },
+      // Final Sort: Relevance > Popularity > Latest
+      { 
+        $sort: req.query.search 
+          ? { searchScore: -1, popularity: -1 } 
+          : sortConfig 
+      },
       { $skip: skip },
       { $limit: limit },
       {
