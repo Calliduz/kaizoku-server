@@ -77,16 +77,19 @@ async function fetchLogoFromFanartTV(tvdbId) {
 
     const selectedBg = enBg || firstBg;
     const bgUrl = selectedBg ? selectedBg.url : null;
+    const bannerUrl = res.data.tvbanner?.[0]?.url || null;
 
-    return { logoUrl, bgUrl };
-  } catch (e) {}
-  return { logoUrl: null, bgUrl: null };
+    return { logoUrl, bgUrl, bannerUrl };
+  } catch (e) {
+    console.error("[Fanart] API Error:", e.message);
+  }
+  return { logoUrl: null, bgUrl: null, bannerUrl: null };
 }
 
-async function getFanartAssetsByAnilistId(anilistId) {
-  const tvdbId = await getTVDBIdFromAniList(anilistId);
+async function getFanartAssetsByAnilistId(anilistId, existingTvdbId = null) {
+  const tvdbId = existingTvdbId || await getTVDBIdFromAniList(anilistId);
   if (tvdbId) return await fetchLogoFromFanartTV(tvdbId);
-  return { logoUrl: null, bgUrl: null };
+  return { logoUrl: null, bgUrl: null, bannerUrl: null };
 }
 
 async function getLogoByAnilistId(anilistId) {

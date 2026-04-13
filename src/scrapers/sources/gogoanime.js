@@ -84,10 +84,15 @@ async function searchAnime(query) {
         imageEl.attr("src") ||
         "";
         
-      const slug = href.replace(/\/+$/, "").split("/").pop() || "";
+      const extractId = (href) => {
+        const slug = href.replace(/\/+$/, "").split("/").pop() || "";
+        // Strip episode and release markers
+        return slug.replace(/-episode-\d+.*$/i, "")
+                   .replace(/-english-(?:subbed|dubbed).*$/i, "");
+      };
 
       return {
-        sourceId: slug,
+        sourceId: extractId(href),
         title,
         url: href.startsWith("http") ? href : `${BASE_URL}${href}`,
         image,
@@ -285,7 +290,9 @@ async function getCatalogAnime(maxPages = 25) {
 
         const extractSeriesId = (h) => {
           const cleaned = h.replace(/\/+$/, "");
-          return cleaned.split("/").pop() || "";
+          const slug = cleaned.split("/").pop() || "";
+          return slug.replace(/-episode-\d+.*$/i, "")
+                     .replace(/-english-(?:subbed|dubbed).*$/i, "");
         };
 
         const sourceId = href ? extractSeriesId(href) : "";

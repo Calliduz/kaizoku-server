@@ -72,12 +72,17 @@ function toSlug(value = "") {
 function cleanTitle(title = "") {
   return title
     .replace(/\s+/g, " ")
+    // Remove episode markers
     .replace(/episode\s+\d+/gi, "")
     .replace(/eps\s+\d+/gi, "")
-    .replace(/\b(?:Season|S)\s*\d+\b/gi, "")
+    // Remove Season markers (more robust)
     .replace(/\d+(?:st|nd|rd|th)\s+Season/gi, "")
+    .replace(/\b(?:Season|S|Part)\s*\d+\b/gi, "")
+    // Remove year markers like (2024)
+    .replace(/\(\d{4}\)/g, "")
+    // Remove release quality/subs
     .replace(
-      /\b(?:Subbed|Dubbed|Sub|Dub|English|Italiano|Español|Português)\b/gi,
+      /\b(?:Subbed|Dubbed|Sub|Dub|English|Italiano|Español|Português|Multi-Sub)\b/gi,
       "",
     )
     .replace(/[\[\]\(\)]/g, " ") // Preserved colons/hyphens to avoid smashing valid short titles together

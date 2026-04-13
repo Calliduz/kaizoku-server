@@ -235,6 +235,11 @@ const animeSchema = new mongoose.Schema(
       default: "",
       index: true,
     },
+    tvdbId: {
+      type: String,
+      default: null,
+      index: true,
+    },
     scrapeSource: {
       type: String,
       default: "",

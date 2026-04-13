@@ -247,17 +247,34 @@ const getLogo = asyncHandler(async (req, res) => {
     return res.status(404).json({ success: false, error: "Anime not found" });
   }
 
-  // Check if we already have it in DB
-  if (anime.logo && anime.logo.trim() !== "" && anime.fanartBackground && anime.fanartBackground.trim() !== "") {
-    return res.json({ success: true, data: anime.logo, background: anime.fanartBackground });
+  // Check if we already have assets in DB
+  const hasAssets = anime.logo && anime.logo.trim() !== "" && anime.fanartBackground && anime.fanartBackground.trim() !== "";
+  
+  if (hasAssets) {
+    return res.json({ 
+      success: true, 
+      data: anime.logo, 
+      background: anime.fanartBackground 
+    });
   }
 
-  // Fetch using fanart
+  // Fetch using fanart, passing existing tvdbId if we have it
   const { logoUrl, bgUrl } = await fanart.getFanartAssetsByAnilistId(
     anime.anilistId,
+    anime.tvdbId
   );
 
   let updated = false;
+
+  // Store TVDB ID if we found one but didn't have it
+  if (!anime.tvdbId) {
+    const tvdbId = await fanart.getTVDBIdFromAniList(anime.anilistId);
+    if (tvdbId) {
+      anime.tvdbId = tvdbId;
+      updated = true;
+    }
+  }
+
   if (logoUrl && anime.logo !== logoUrl) {
     anime.logo = logoUrl;
     updated = true;
