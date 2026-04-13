@@ -400,39 +400,22 @@ async function fetchEpisodeSources(episodeId, forceRefresh = false) {
   const anime = episode.animeId;
   logger.info(`[Engine] Hunting sources for "${anime.title}"...`);
 
-  // 1) Execute sources in priority order to favor the default array setting
-  //    and return as early as possible if we get hits, avoiding long Puppeteer hang-ups.
-  let allSources = [];
-  const seenUrls = new Set();
-
-  for (const source of SOURCES) {
+  // 1) Execute ALL sources in parallel for multi-source aggregation
+  const aggregationStart = Date.now();
+  const sourceTasks = SOURCES.map(async (source) => {
     try {
       let sourceResults = [];
       const isRecordedPrimary = source.name === anime.scrapeSource;
       const isDefault = source.name === SOURCES[0].name;
 
-      // Only attempt to run if it's the requested default, the recorded primary, or if we force refresh
-      if (
-        !isRecordedPrimary &&
-        !isDefault &&
-        !forceRefresh &&
-        allSources.length > 0
-      ) {
-        continue; // Skip secondary sources if we already found something and aren't forcing a deep refresh
-      }
-
-      // Scenario A: This source is already the recorded primary
+      // Scenario A: Fast Resolve (This source is already the recorded primary)
       if (isRecordedPrimary && anime.sourceId) {
         sourceResults = await trySourceWithFallbacks(source, anime, episode);
       }
 
-      // Scenario B: Search and match this source (Deep Discovery)
-      // Only do deep discovery if Scenario A failed (or didn't run)
-      if (
-        sourceResults.length === 0 &&
-        (isDefault || isRecordedPrimary || forceRefresh)
-      ) {
-        logger.info(`[Engine] Deep Discovery for ${source.name}...`);
+      // Scenario B: Deep Discovery (Check if this provider also has the content)
+      if (sourceResults.length === 0) {
+        logger.debug(`[Engine] Deep Discovery for ${source.name}...`);
         const searchResults = await sourceLimiter.run(() =>
           source.searchAnime(anime.title),
         );
@@ -451,63 +434,46 @@ async function fetchEpisodeSources(episodeId, forceRefresh = false) {
               source.getStreamingSources(matchedEp.url),
             );
 
-            // If Deep Discovery succeeded, update the primary source binding
-            // so future episodes of this anime can use the fast Scenario A
-            if (
-              sourceResults.length > 0 &&
-              source.name !== anime.scrapeSource
-            ) {
-              logger.info(
-                `[Engine] Updating primary source for ${anime.title} to ${source.name} (${bestItem.sourceId})`,
-              );
-              try {
-                await Anime.findByIdAndUpdate(anime._id, {
-                  $set: {
-                    scrapeSource: source.name,
-                    sourceId: bestItem.sourceId,
-                  },
-                });
-                anime.scrapeSource = source.name;
-                anime.sourceId = bestItem.sourceId;
-              } catch (updateErr) {
-                logger.error(
-                  `[Engine] Failed to update primary source: ${updateErr.message}`,
-                );
-              }
+            // Update primary binding if this source is "better" or if primary was missing
+            if (sourceResults.length > 0 && !anime.sourceId) {
+              await Anime.findByIdAndUpdate(anime._id, {
+                $set: { scrapeSource: source.name, sourceId: bestItem.sourceId },
+              });
             }
           }
         }
       }
 
-      if (sourceResults.length > 0) {
-        // Tag sources
-        const tagged = sourceResults.map((s) => ({
-          ...s,
-          server: `${source.name.charAt(0).toUpperCase() + source.name.slice(1)} - ${s.server || "Stream"}`,
-        }));
-
-        tagged.forEach((src) => {
-          if (!seenUrls.has(src.url)) {
-            seenUrls.add(src.url);
-            allSources.push(src);
-          }
-        });
-
-        // If we found sources, break early!
-        // This makes it INSTANT if the first provider works.
-        if (allSources.length > 0) {
-          logger.info(
-            `[Engine] Found ${allSources.length} sources from ${source.name}, skipping others for speed.`,
-          );
-          break;
-        }
-      }
+      // Tag results with provider name for the UI
+      return sourceResults.map((s) => ({
+        ...s,
+        server: `${source.name.charAt(0).toUpperCase() + source.name.slice(1)} - ${s.server || "Stream"}`,
+        provider: source.name,
+      }));
     } catch (err) {
-      logger.error(
-        `[Engine] Aggregator task for ${source.name} failed: ${err.message}`,
-      );
+      logger.error(`[Engine] Aggregator task for ${source.name} failed: ${err.message}`);
+      return [];
     }
-  }
+  });
+
+  // Wait for all sources to settle (max 15s timeout for the whole bundle)
+  const results = await Promise.allSettled(sourceTasks);
+  const allSources = [];
+  const seenUrls = new Set();
+
+  results.forEach((res) => {
+    if (res.status === "fulfilled" && Array.isArray(res.value)) {
+      res.value.forEach((src) => {
+        if (!seenUrls.has(src.url)) {
+          seenUrls.add(src.url);
+          allSources.push(src);
+        }
+      });
+    }
+  });
+
+  const duration = Date.now() - aggregationStart;
+  logger.info(`[Engine] Aggregation complete in ${duration}ms. Found ${allSources.length} total sources.`);
 
   // Sort: High quality first, then Dub last (usually Sub is preferred)
   allSources.sort((a, b) => {

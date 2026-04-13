@@ -40,7 +40,8 @@ router.get("/proxy", async (req, res) => {
   }
 
   try {
-    const isM3U8 = url.includes(".m3u8");
+    // Detect if this is likely an HLS stream from the URL
+    let isM3U8 = url.includes(".m3u8");
 
     const response = await axios.get(url, {
       headers: {
@@ -53,12 +54,24 @@ router.get("/proxy", async (req, res) => {
     });
 
     // Mirror the content type
-    const contentType = response.headers["content-type"] || (isM3U8 ? "application/vnd.apple.mpegurl" : "application/octet-stream");
-    res.setHeader("Content-Type", contentType);
+    const contentType = response.headers["content-type"] || "";
+    // Refine HLS detection based on Content-Type
+    isM3U8 = isM3U8 || contentType.includes("mpegurl");
+    const isHtml = contentType.includes("text/html");
+
+    res.setHeader("Content-Type", contentType || (isM3U8 ? "application/vnd.apple.mpegurl" : "application/octet-stream"));
 
     if (isM3U8) {
       const rewritten = rewriteM3U8(response.data, url, referer);
       res.send(rewritten);
+    } else if (isHtml) {
+      // Inject <base> tag to fix relative links (JS/CSS/Images) on proxied pages
+      let html = response.data;
+      if (typeof html === "string" && !html.includes("<base ")) {
+        const baseTag = `<base href="${new URL(url).origin}/">`;
+        html = html.replace("<head>", `<head>${baseTag}`);
+      }
+      res.send(html);
     } else {
       response.data.pipe(res);
     }
