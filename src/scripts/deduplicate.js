@@ -29,23 +29,27 @@ function cleanTitle(title = "") {
     .trim();
 }
 
-async function deduplicate() {
+/**
+ * Core Deduplication Logic
+ * Groups anime by AniList ID or Slug and merges duplicate entries.
+ */
+async function runDeduplication() {
   try {
-    await mongoose.connect(env.MONGODB_URI);
-    logger.info("Connected to MongoDB for deep deduplication");
+    const start = Date.now();
+    logger.info("[Deduplication] Starting deep cleanup pass...");
 
     // 1. First Pass: Re-link missing AniList IDs
     const missingMetadata = await Anime.find({ anilistId: { $exists: false } });
     if (missingMetadata.length > 0) {
       logger.info(
-        `Attempting to link ${missingMetadata.length} records to AniList...`,
+        `[Deduplication] Attempting to link ${missingMetadata.length} records to AniList...`,
       );
       for (const anime of missingMetadata) {
         try {
           const results = await searchAniList(anime.title);
           const { match } = findBestMatch(anime.title, results);
           if (match) {
-            logger.info(`Linked "${anime.title}" to AniList ID: ${match.id}`);
+            logger.info(`[Deduplication] Linked "${anime.title}" to AniList ID: ${match.id}`);
             await Anime.findByIdAndUpdate(anime._id, {
               $set: {
                 anilistId: match.id,
@@ -65,17 +69,13 @@ async function deduplicate() {
     const slugMap = {};
 
     for (const anime of allAnime) {
-      // Priority 1: Anilist ID
       if (anime.anilistId) {
         if (!anilistMap[anime.anilistId]) anilistMap[anime.anilistId] = [];
         anilistMap[anime.anilistId].push(anime);
       } else {
-        // Priority 2: Slug fallback ONLY IF SLUG IS LONG ENOUGH
-        // Prevents nuking short names like "One Piece"
         const normalizedTitle = cleanTitle(anime.title);
         const normalizedSlug = toSlug(normalizedTitle);
         if (normalizedSlug.length >= 6) {
-          // Must be at least 6 length to merge via text
           if (!slugMap[normalizedSlug]) slugMap[normalizedSlug] = [];
           slugMap[normalizedSlug].push(anime);
         }
@@ -89,7 +89,7 @@ async function deduplicate() {
       for (const key in map) {
         const duplicates = map[key];
         if (duplicates.length > 1) {
-          logger.info(`Found ${duplicates.length} duplicates for key: ${key}`);
+          logger.info(`[Deduplication] Found ${duplicates.length} duplicates for key: ${key}`);
 
           duplicates.sort((a, b) => {
             if (a.anilistId && !b.anilistId) return -1;
@@ -127,15 +127,31 @@ async function deduplicate() {
     await processGroups(anilistMap);
     await processGroups(slugMap);
 
+    const duration = ((Date.now() - start) / 1000).toFixed(2);
     logger.info(
-      `Deduplication complete! Deleted ${deletedCount} records and merged ${mergedEpisodesCount} episodes.`,
+      `[Deduplication] Complete in ${duration}s! Deleted ${deletedCount} records and merged ${mergedEpisodesCount} episodes.`,
     );
+    
+    return { deletedCount, mergedEpisodesCount };
   } catch (error) {
-    logger.error(`Deduplication failed: ${error.message}`);
-  } finally {
-    await mongoose.disconnect();
-    process.exit(0);
+    logger.error(`[Deduplication] Failed: ${error.message}`);
+    throw error;
   }
 }
 
-deduplicate();
+// Support CLI execution
+if (require.main === module) {
+  (async () => {
+    try {
+      await mongoose.connect(env.MONGODB_URI);
+      await runDeduplication();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      await mongoose.disconnect();
+      process.exit(0);
+    }
+  })();
+}
+
+module.exports = { runDeduplication };
