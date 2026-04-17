@@ -253,6 +253,10 @@ const animeSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    episodesUpdatedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,

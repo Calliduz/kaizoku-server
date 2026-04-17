@@ -1,3 +1,4 @@
+const axios = require("axios");
 const logger = require("../utils/logger");
 
 /**
@@ -34,7 +35,7 @@ const SEARCH_QUERY = `
           color
         }
         bannerImage
-        description(asHtml: false)
+        description
         genres
         tags {
           name
@@ -137,6 +138,62 @@ const SEARCH_QUERY = `
   }
 `;
 
+const TOP_100_QUERY = `
+  query ($page: Int, $perPage: Int) {
+    Page(page: $page, perPage: $perPage) {
+      media(type: ANIME, sort: SCORE_DESC, isAdult: false) {
+        id
+        title {
+          romaji
+          english
+          native
+        }
+        coverImage {
+          extraLarge
+          large
+          color
+        }
+        bannerImage
+        description
+        genres
+        averageScore
+        popularity
+        format
+        status
+        episodes
+        season
+        seasonYear
+      }
+    }
+  }
+`;
+
+const AIRING_SCHEDULE_QUERY = `
+  query ($airingAt_greater: Int, $airingAt_lesser: Int) {
+    Page(page: 1, perPage: 50) {
+      airingSchedules(airingAt_greater: $airingAt_greater, airingAt_lesser: $airingAt_lesser, sort: TIME) {
+        airingAt
+        episode
+        media {
+          id
+          title {
+            romaji
+            english
+            native
+          }
+          coverImage {
+            extraLarge
+            large
+          }
+          format
+          genres
+          episodes
+        }
+      }
+    }
+  }
+`;
+
 /**
  * Search AniList for anime metadata.
  *
@@ -150,9 +207,15 @@ async function searchAniList(query, perPage = 10, retries = 3) {
     return queryCache.get(cacheKey);
   }
 
+  return executeAniListQuery(SEARCH_QUERY, { search: query, page: 1, perPage }, retries, cacheKey);
+}
+
+/**
+ * Execute a generic AniList GraphQL query with rate limiting and retries.
+ */
+async function executeAniListQuery(query, variables, retries = 3, cacheKey = null) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      // Enforce rate limiting
       const now = Date.now();
       const timeSinceLast = now - lastRequestTime;
       if (timeSinceLast < MIN_DELAY_MS) {
@@ -160,49 +223,47 @@ async function searchAniList(query, perPage = 10, retries = 3) {
       }
       lastRequestTime = Date.now();
 
-      const response = await fetch(ANILIST_API, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: SEARCH_QUERY,
-          variables: { search: query, page: 1, perPage },
-        }),
+      const response = await axios.post(ANILIST_API, {
+        query,
+        variables
+      }, {
+        headers: { "Content-Type": "application/json" }
       });
+      
+      const data = response.data?.data?.Page || {};
 
-      if (!response.ok) {
-        if (response.status === 429) {
-          const retryAfter = response.headers.get("retry-after");
-          const delay = retryAfter ? parseInt(retryAfter, 10) * 1000 : 5000;
-          logger.warn(
-            `[AniList] Rate limited (429). Retrying in ${delay / 1000}s... (Attempt ${attempt}/${retries})`,
-          );
-          await wait(delay);
-          continue; // Retry
-        }
-        throw new Error(`AniList API returned ${response.status}`);
-      }
-
-      const json = await response.json();
-      const media = json?.data?.Page?.media || [];
-
-      logger.debug(`[AniList] Found ${media.length} results for "${query}"`);
-
-      // Cache the result
-      queryCache.set(cacheKey, media);
-      return media;
+      if (cacheKey) queryCache.set(cacheKey, data.media || data.airingSchedules || []);
+      return data.media || data.airingSchedules || [];
     } catch (error) {
-      if (attempt === retries) {
-        logger.error(
-          `[AniList] Search failed after ${retries} attempts: ${error.message}`,
-        );
-        return [];
+      if (error.response) {
+        if (error.response.status === 429) {
+          const retryAfter = error.response.headers["retry-after"];
+          const delay = retryAfter ? parseInt(retryAfter, 10) * 1000 : 5000;
+          logger.warn(`[AniList] Rate limited (429). Retrying in ${delay / 1000}s...`);
+          await wait(delay);
+          continue;
+        }
+        // Log detailed GraphQL errors
+        logger.error(`[AniList] API Error (${error.response.status}): ${JSON.stringify(error.response.data?.errors || error.response.data)}`);
       }
-      logger.warn(
-        `[AniList] Error: ${error.message}. Retrying... (Attempt ${attempt}/${retries})`,
-      );
+      if (attempt === retries) throw error;
       await wait(1000 * attempt);
     }
   }
+}
+
+/**
+ * Fetch top rated anime from AniList.
+ */
+async function getTopAnime(page = 1, perPage = 50) {
+  return executeAniListQuery(TOP_100_QUERY, { page, perPage });
+}
+
+/**
+ * Fetch airing schedule for a given time range.
+ */
+async function getAiringSchedule(start, end) {
+  return executeAniListQuery(AIRING_SCHEDULE_QUERY, { airingAt_greater: start, airingAt_lesser: end });
 }
 
 /**
@@ -335,4 +396,9 @@ function normalizeAniListData(media) {
   };
 }
 
-module.exports = { searchAniList, normalizeAniListData };
+module.exports = { 
+  searchAniList, 
+  normalizeAniListData, 
+  getTopAnime, 
+  getAiringSchedule 
+};

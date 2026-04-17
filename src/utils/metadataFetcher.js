@@ -28,15 +28,19 @@ async function fetchEpisodeMetadata(anilistId) {
       return [];
     }
 
-    return info.episodes.map(ep => ({
+    return (info.episodes || []).map(ep => ({
       number: ep.number,
-      title: ep.title || "",
-      description: ep.description || "",
-      thumbnail: ep.image || "",
+      title: ep.title || `Episode ${ep.number}`,
+      description: "", // SKIP synopses to improve stability and performance
+      thumbnail: ep.image || ep.thumbnail || "",
       seasonNumber: info.seasonNumber || null
     }));
   } catch (error) {
-    logger.error(`[Metadata] Failed to fetch enriched metadata: ${error.message}`);
+    if (error.message.includes("Unexpected end of JSON input")) {
+      logger.error(`[Metadata] Provider balance error (AniList/TMDb) for ID ${anilistId}: ${error.message}`);
+    } else {
+      logger.error(`[Metadata] Failed to fetch enriched metadata: ${error.message}`);
+    }
     return [];
   }
 }

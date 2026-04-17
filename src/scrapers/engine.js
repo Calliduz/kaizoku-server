@@ -58,6 +58,9 @@ const aniwatch = require("./sources/aniwatch");
 const animekai = require("./sources/animekai");
 
 const SOURCES = [animepahe, animekai, gogoanime, aniwatch];
+
+// Track ongoing scrapes to prevent redundant work and inform UI
+const activeScrapes = new Set();
 // ────────────────────────────────────────────────────────────
 
 function toSlug(value = "") {
@@ -371,8 +374,13 @@ async function scrapeEpisodes(animeId, animeUrl, source) {
     }
 
     logger.info(
-      `[Engine] Upserted ${episodes.length} episodes for anime ${animeId}`,
+      `[Engine] Upserted ${scrapedEpisodes.length} episodes for anime ${animeId}`,
     );
+
+    // Update the last scrape timestamp to enable intelligent caching
+    await Anime.findByIdAndUpdate(animeId, {
+      $set: { episodesUpdatedAt: new Date() }
+    });
   } catch (error) {
     logger.error(
       `[Engine] Episode scrape failed for ${animeId}: ${error.message}`,
@@ -601,62 +609,127 @@ function getHeuristicBestMatch(anime, searchResults) {
  */
 async function linkAndFetchEpisodes(animeId) {
   const anime = await Anime.findById(animeId);
-  if (!anime || (anime.sourceId && anime.scrapeSource)) return;
+  if (!anime) return;
+  
+  if (anime.sourceId && anime.scrapeSource) {
+    // ── Intelligent Cache Check ──
+    const now = new Date();
+    const lastUpdate = anime.episodesUpdatedAt || new Date(0);
+    const hoursSinceUpdate = (now - lastUpdate) / (1000 * 60 * 60);
+
+    // 1. If finished and we have episodes, don't re-scrape
+    if (anime.status === "FINISHED") {
+      logger.debug(`[Engine] Skipping re-scrape for FINISHED anime: ${anime.title}`);
+      return;
+    }
+
+    // 2. If airing, only re-scrape every 24 hours to prevent hammering sources
+    if (hoursSinceUpdate < 24) {
+      logger.debug(`[Engine] Skipping re-scrape for ${anime.title} (Recently updated ${hoursSinceUpdate.toFixed(1)}h ago)`);
+      return;
+    }
+
+    // Otherwise, trigger background refresh
+    scrapeEpisodes(anime._id, anime.sourceId, SOURCES.find(s => s.name === anime.scrapeSource)).catch(() => {});
+    return;
+  }
+
+  if (activeScrapes.has(animeId)) return;
+  activeScrapes.add(animeId);
 
   logger.info(
     `[Engine] Lazy-loading episodes for ${anime.title} (Anilist ID: ${anime.anilistId})`,
   );
 
-  // Try all sources
-  for (const source of SOURCES) {
+  // Try all sources in parallel with a strict timeout per source
+  const searchPromises = SOURCES.map(async (source) => {
     try {
-      const searchResults = await sourceLimiter.run(() =>
-        source.searchAnime(anime.title),
-      );
-      if (!searchResults || searchResults.length === 0) continue;
+      const sourceTask = (async () => {
+        const searchResults = await sourceLimiter.run(() =>
+          source.searchAnime(anime.title),
+        );
+        if (!searchResults || searchResults.length === 0) return null;
 
-      let bestItem = null;
-      let highestScore = 0;
+        let bestItem = null;
+        let highestScore = 0;
+        const targetTitles = [anime.title, ...(anime.altTitles || [])].filter(Boolean);
 
-      const targetTitles = [anime.title, ...(anime.altTitles || [])].filter(
-        Boolean,
-      );
-
-      // Local heuristic fuzzy match: avoids 15 seconds of AniList GraphQL requests
-      for (const item of searchResults) {
-        for (const target of targetTitles) {
-          const fullScore = fuzzball.ratio(item.title.toLowerCase(), target.toLowerCase());
-          const partialScore = fuzzball.partial_ratio(item.title.toLowerCase(), target.toLowerCase());
-          const score = (partialScore * 0.8) + (fullScore * 0.2);
-          if (score > highestScore) {
-            highestScore = score;
-            bestItem = item;
+        for (const item of searchResults) {
+          for (const target of targetTitles) {
+            const fullScore = fuzzball.ratio(item.title.toLowerCase(), target.toLowerCase());
+            const partialScore = fuzzball.partial_ratio(item.title.toLowerCase(), target.toLowerCase());
+            const score = (partialScore * 0.8) + (fullScore * 0.2);
+            if (score > highestScore) {
+              highestScore = score;
+              bestItem = item;
+            }
           }
         }
-      }
 
-      if (bestItem && highestScore > 70) {
-        logger.info(
-          `[Engine] Matched "${anime.title}" to source "${bestItem.title}" with score ${highestScore}`,
-        );
+        if (bestItem && highestScore > 70) {
+          return { source, bestItem, highestScore };
+        }
+        return null;
+      })();
 
-        // Atomic update to prevent VersionError during concurrent source discovery
+      // 15 second timeout per source
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Source request timed out")), 15000)
+      );
+
+      return await Promise.race([sourceTask, timeout]);
+    } catch (error) {
+      logger.error(`[Engine] Search failed or timed out for source ${source.name}: ${error.message}`);
+      return null;
+    }
+  });
+
+  const results = await Promise.allSettled(searchPromises);
+  
+  // Find successful matches and sort by score
+  const matches = results
+    .filter(r => r.status === "fulfilled" && r.value)
+    .map(r => r.value)
+    .sort((a, b) => b.highestScore - a.highestScore);
+
+  if (matches.length === 0) {
+    logger.warn(`[Engine] No matches found across all sources for "${anime.title}"`);
+    activeScrapes.delete(animeId);
+    return;
+  }
+
+  // Fallback Logic: Try each match in order until we find one that actually has episodes
+  for (const match of matches) {
+    const { source, bestItem, highestScore } = match;
+    
+    try {
+      logger.info(`[Engine] Trying match "${bestItem.title}" (${source.name}) with score ${highestScore}`);
+      
+      // Attempt to scrape episodes for this specific match
+      const episodesFound = await scrapeEpisodes(anime._id, bestItem.url, source);
+      
+      if (episodesFound && episodesFound.length > 0) {
+        logger.info(`[Engine] Successfully linked "${anime.title}" to ${source.name} with ${episodesFound.length} episodes`);
+        
         await Anime.findByIdAndUpdate(anime._id, {
           $set: {
             sourceId: bestItem.sourceId,
             scrapeSource: source.name,
           },
         });
-
-        await scrapeEpisodes(anime._id, bestItem.url, source);
-        return;
+        
+        activeScrapes.delete(animeId);
+        return; // Success!
+      } else {
+        logger.warn(`[Engine] Match "${bestItem.title}" (${source.name}) returned 0 episodes. Trying next match...`);
       }
-    } catch (error) {
-      logger.error(
-        `[Engine] Lazy load failed for source ${source.name}: ${error.message}`,
-      );
+    } catch (err) {
+      logger.error(`[Engine] Error during fallback scrape for ${source.name}: ${err.message}`);
     }
   }
+
+  logger.error(`[Engine] All ${matches.length} matches for "${anime.title}" failed to yield episodes.`);
+  activeScrapes.delete(animeId);
 }
 
 /**
@@ -764,4 +837,5 @@ module.exports = {
   linkAndFetchEpisodes,
   enrichAllEpisodesMetadata,
   runScrape,
+  activeScrapes,
 };

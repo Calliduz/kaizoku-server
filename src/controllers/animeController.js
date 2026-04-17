@@ -5,11 +5,21 @@ const {
   fetchEpisodeSources,
   linkAndFetchEpisodes,
   enrichAllEpisodesMetadata,
+  activeScrapes,
 } = require("../scrapers/engine");
-const { searchAniList, normalizeAniListData } = require("../scrapers/anilist");
+const { 
+  searchAniList, 
+  normalizeAniListData, 
+  getTopAnime, 
+  getAiringSchedule 
+} = require("../scrapers/anilist");
 const asyncHandler = require("../middleware/asyncHandler");
 const fanart = require("../utils/fanart");
 const logger = require("../utils/logger");
+const fileCache = require("../utils/fileCache");
+
+// In-memory lock to prevent concurrent enrichment for the same anime
+const PendingEnrichments = new Map();
 
 /**
  * @desc    Get all anime (paginated, searchable)
@@ -163,26 +173,24 @@ const getById = asyncHandler(async (req, res) => {
     throw error;
   }
 
-  // Auto-enrich metadata if we have signs of low-quality or missing data
-  const isLowQuality =
-    !anime.anilistId ||
-    !anime.description ||
-    !anime.relations ||
-    anime.relations.length === 0;
-
-  if (isLowQuality) {
-    const anilistResults = await searchAniList(anime.title, 5);
-    if (anilistResults.length > 0) {
-      // Use the first result (highest match score)
-      const enrichedData = normalizeAniListData(anilistResults[0]);
-
-      // Use findByIdAndUpdate to avoid VersionError constraints caused by concurrent requests
-      anime = await Anime.findByIdAndUpdate(
-        anime._id,
-        { $set: enrichedData },
-        { new: true, runValidators: true },
-      );
-    }
+  // Auto-enrich metadata in background if missing
+  const needsEnrichment = !anime.anilistId || !anime.description || !anime.relations || anime.relations.length === 0;
+  if (needsEnrichment && !PendingEnrichments.has(anime._id.toString())) {
+    (async () => {
+      try {
+        PendingEnrichments.set(anime._id.toString(), Date.now());
+        const anilistResults = await searchAniList(anime.title, 5);
+        if (anilistResults.length > 0) {
+          const enrichedData = normalizeAniListData(anilistResults[0]);
+          await Anime.findByIdAndUpdate(anime._id, { $set: enrichedData });
+          logger.info(`[Controller] Background enriched detail for ${anime.title}`);
+        }
+      } catch (err) {
+        logger.error(`[Controller] Background enrichment failed for ${anime.title}: ${err.message}`);
+      } finally {
+        PendingEnrichments.delete(anime._id.toString());
+      }
+    })();
   }
 
   res.json({ success: true, data: anime });
@@ -202,25 +210,46 @@ const getEpisodes = asyncHandler(async (req, res) => {
     .sort({ number: -1 })
     .lean();
 
+  const isScraping = activeScrapes.has(req.params.id);
+
   if (episodes.length === 0) {
-    await linkAndFetchEpisodes(req.params.id);
-    episodes = await Episode.find({ animeId: req.params.id })
-      .sort({ number: -1 })
-      .lean();
+    // If not already in the DB, trigger the lazy-link process
+    // This will add to activeScrapes inside linkAndFetchEpisodes
+    if (!isScraping) {
+      // Start in background but inform the response
+      linkAndFetchEpisodes(req.params.id).catch(err => 
+        logger.error(`[Controller] linkAndFetchEpisodes failed: ${err.message}`)
+      );
+      
+      return res.json({ 
+        success: true, 
+        data: [], 
+        isScraping: true,
+        message: "Episode discovery started in background."
+      });
+    }
+
+    return res.json({ 
+      success: true, 
+      data: [], 
+      isScraping: true,
+      message: "Episode discovery is currently in progress."
+    });
   }
 
-  // Ensure metadata is synced (Netflix descriptions/thumbnails)
-  // If not already enriched, WE WAIT for it to ensure the first visit is populated
+  // If episodes exist, return them immediately
+  // Also trigger episode metadata sync in background (Netflix-style thumbnails)
   if (!anime.metaEnriched && episodes.length > 0) {
-    logger.info(`[Controller] First-time metadata sync for ${anime.title}...`);
-    await enrichAllEpisodesMetadata(req.params.id);
-    // Re-fetch once to get the new data
-    episodes = await Episode.find({ animeId: req.params.id })
-      .sort({ number: -1 })
-      .lean();
+    const animeId = req.params.id;
+    if (!PendingEnrichments.has(animeId)) {
+      PendingEnrichments.set(animeId, Date.now());
+      enrichAllEpisodesMetadata(animeId)
+        .catch(err => logger.error(`[Controller] Episode enrichment failed for ${anime.title}: ${err.message}`))
+        .finally(() => PendingEnrichments.delete(animeId));
+    }
   }
 
-  res.json({ success: true, data: episodes });
+  res.json({ success: true, data: episodes, isScraping });
 });
 
 /**
@@ -284,6 +313,44 @@ const getSuggestions = asyncHandler(async (req, res) => {
   res.json({ success: true, data: suggestions });
 });
 
+/**
+ * @desc    Get top 100 anime from AniList (cached)
+ * @route   GET /api/anime/top-100
+ */
+const getTop100 = asyncHandler(async (req, res) => {
+  const cached = await fileCache.get("top-100-anime");
+  if (cached) return res.json({ success: true, data: cached });
+
+  const topAnime = await getTopAnime(1, 100);
+  const normalized = topAnime.map(anime => ({
+    ...normalizeAniListData(anime),
+    _id: `anilist:${anime.id}` // Use a virtual ID for external content
+  }));
+  
+  await fileCache.set("top-100-anime", normalized, 86400); // Cache for 24h
+
+  res.json({ success: true, data: normalized });
+});
+
+/**
+ * @desc    Get airing schedule from AniList (cached)
+ * @route   GET /api/anime/airing-schedule
+ */
+const getSchedule = asyncHandler(async (req, res) => {
+  const cached = await fileCache.get("airing-schedule");
+  if (cached) return res.json({ success: true, data: cached });
+
+  // Weekly range: today - 1 day to today + 6 days
+  const now = Math.floor(Date.now() / 1000);
+  const start = now - 86400 * 1;
+  const end = now + 86400 * 6;
+
+  const schedule = await getAiringSchedule(start, end);
+  await fileCache.set("airing-schedule", schedule, 3600 * 6); // Cache for 6h
+
+  res.json({ success: true, data: schedule });
+});
+
 module.exports = {
   getAll,
   getById,
@@ -291,6 +358,8 @@ module.exports = {
   getEpisodeSources,
   triggerScrape,
   getSuggestions,
+  getTop100,
+  getSchedule,
 };
 
 /**
