@@ -2,7 +2,9 @@ const Anime = require("../models/Anime");
 const Episode = require("../models/Episode");
 const { searchAniList, normalizeAniListData } = require("./anilist");
 const { findBestMatch } = require("./matcher");
+const { fetchEpisodeMetadata } = require("../utils/metadataFetcher");
 const logger = require("../utils/logger");
+const fanart = require("../utils/fanart");
 const fuzzball = require("fuzzball");
 
 // ── Simple In-Memory TTL Cache ──
@@ -335,19 +337,33 @@ async function scrapeCatalog(options = {}) {
  */
 async function scrapeEpisodes(animeId, animeUrl, source) {
   try {
-    const episodes = await sourceLimiter.run(() =>
-      source.getEpisodes(animeUrl),
-    );
+    const anime = await Anime.findById(animeId);
+    if (!anime) throw new Error("Anime not found");
 
-    for (const ep of episodes) {
+    const [scrapedEpisodes, metaEpisodes] = await Promise.all([
+      sourceLimiter.run(() => source.getEpisodes(animeUrl)),
+      anime.anilistId ? fetchEpisodeMetadata(anime.anilistId) : Promise.resolve([]),
+    ]);
+
+    // Simple Season Extractor Fallback
+    const titleSeasonMatch = anime.title.match(/Season\s+(\d+)/i);
+    const fallbackSeason = titleSeasonMatch ? parseInt(titleSeasonMatch[1]) : null;
+
+    for (const ep of scrapedEpisodes) {
+      // Find matching metadata (usually by number)
+      const meta = metaEpisodes.find((m) => m.number === ep.number);
+
       await Episode.findOneAndUpdate(
         { animeId, number: ep.number },
         {
           $set: {
             animeId,
             number: ep.number,
-            title: ep.title || `Episode ${ep.number}`,
+            title: ep.title || meta?.title || `Episode ${ep.number}`,
             sourceEpisodeId: ep.sourceEpisodeId || "",
+            description: meta?.description || "",
+            thumbnail: ep.thumbnail || meta?.thumbnail || "",
+            seasonNumber: meta?.seasonNumber || fallbackSeason,
           },
         },
         { upsert: true, new: true, runValidators: true },
@@ -397,7 +413,31 @@ async function fetchEpisodeSources(episodeId, forceRefresh = false) {
   }
 
   const anime = episode.animeId;
-  logger.info(`[Engine] Hunting sources for "${anime.title}"...`);
+  logger.info(`[Engine] Hunting sources for "${anime.title}" (Force: ${forceRefresh})...`);
+
+  // 0) If force refresh, re-fetch metadata (titles, descriptions, thumbnails)
+  if (forceRefresh && anime.anilistId) {
+    try {
+      const metaEpisodes = await fetchEpisodeMetadata(anime.anilistId);
+      const meta = metaEpisodes.find((m) => m.number === episode.number);
+      if (meta) {
+        const titleSeasonMatch = anime.title.match(/Season\s+(\d+)/i);
+        const fallbackSeason = titleSeasonMatch ? parseInt(titleSeasonMatch[1]) : null;
+
+        await Episode.findByIdAndUpdate(episode._id, {
+          $set: {
+            description: meta.description || "",
+            thumbnail: meta.thumbnail || "",
+            title: meta.title || `Episode ${episode.number}`,
+            seasonNumber: meta.seasonNumber || fallbackSeason,
+          },
+        });
+        logger.info(`[Engine] Refreshed metadata for episode ${episode._id}`);
+      }
+    } catch (err) {
+      logger.error(`[Engine] Metadata refresh failed during source hunt: ${err.message}`);
+    }
+  }
 
   // 1) Execute ALL sources in parallel for multi-source aggregation
   const aggregationStart = Date.now();
@@ -646,11 +686,82 @@ async function runScrape() {
   process.exit(0);
 }
 
+/**
+ * Lazily enrich all episodes for a specific anime in batches.
+ * Fetches high-quality metadata from external providers (AniList/TMDB).
+ */
+async function enrichAllEpisodesMetadata(animeId) {
+  const cacheKey = `enrichment-lock:${animeId}`;
+  if (getCache(cacheKey)) return; // Already recently enriched or in-progress
+  
+  setCache(cacheKey, true); // Lock for 1 hour default
+
+  try {
+    const anime = await Anime.findById(animeId);
+    if (!anime || !anime.anilistId) return;
+
+    logger.info(`[Engine] Running batch enrichment for "${anime.title}"...`);
+    const metaEpisodes = await fetchEpisodeMetadata(anime.anilistId);
+    
+    if (metaEpisodes.length === 0) return;
+
+    // Process in batches of 50 to avoid blocking the event loop or slamming the DB
+    const BATCH_SIZE = 50;
+    for (let i = 0; i < metaEpisodes.length; i += BATCH_SIZE) {
+      const batch = metaEpisodes.slice(i, i + BATCH_SIZE);
+      
+      const updatePromises = batch.map(meta => {
+        return Episode.findOneAndUpdate(
+          { animeId, number: meta.number },
+          { 
+            $set: { 
+              description: meta.description,
+              thumbnail: meta.thumbnail,
+              title: meta.title,
+              seasonNumber: meta.seasonNumber
+            } 
+          },
+          { new: true }
+        );
+      });
+
+      await Promise.allSettled(updatePromises);
+    }
+
+    logger.info(`[Engine] Batch enrichment complete for "${anime.title}".`);
+    
+    // Also fetch and store logo/background assets if missing
+    if (!anime.logo || !anime.fanartBackground) {
+      try {
+        logger.info(`[Engine] Pre-fetching assets for "${anime.title}"...`);
+        const { logoUrl, bgUrl } = await fanart.getFanartAssetsByAnilistId(anime.anilistId, anime.tvdbId);
+        if (logoUrl || bgUrl) {
+          await Anime.findByIdAndUpdate(animeId, { 
+            $set: { 
+              logo: logoUrl || anime.logo, 
+              fanartBackground: bgUrl || anime.fanartBackground 
+            } 
+          });
+          logger.info(`[Engine] Assets stored for "${anime.title}".`);
+        }
+      } catch (assetErr) {
+        logger.warn(`[Engine] Asset pre-fetch failed: ${assetErr.message}`);
+      }
+    }
+
+    // Mark as enriched to avoid redundant full-syncs
+    await Anime.findByIdAndUpdate(animeId, { $set: { metaEnriched: true } });
+  } catch (err) {
+    logger.error(`[Engine] Batch enrichment failed: ${err.message}`);
+  }
+}
+
 module.exports = {
   scrape,
   scrapeCatalog,
   scrapeEpisodes,
   fetchEpisodeSources,
   linkAndFetchEpisodes,
+  enrichAllEpisodesMetadata,
   runScrape,
 };

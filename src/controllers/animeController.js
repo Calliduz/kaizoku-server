@@ -4,10 +4,12 @@ const {
   scrape,
   fetchEpisodeSources,
   linkAndFetchEpisodes,
+  enrichAllEpisodesMetadata,
 } = require("../scrapers/engine");
 const { searchAniList, normalizeAniListData } = require("../scrapers/anilist");
 const asyncHandler = require("../middleware/asyncHandler");
 const fanart = require("../utils/fanart");
+const logger = require("../utils/logger");
 
 /**
  * @desc    Get all anime (paginated, searchable)
@@ -191,14 +193,28 @@ const getById = asyncHandler(async (req, res) => {
  * @route   GET /api/anime/:id/episodes
  */
 const getEpisodes = asyncHandler(async (req, res) => {
+  const anime = await Anime.findById(req.params.id);
+  if (!anime) {
+    return res.status(404).json({ success: false, message: "Anime not found" });
+  }
+
   let episodes = await Episode.find({ animeId: req.params.id })
-    .sort({ number: -1 }) // Sort latest first by default
+    .sort({ number: -1 })
     .lean();
 
   if (episodes.length === 0) {
-    // Lazy load the episodes dynamically using the Engine!
     await linkAndFetchEpisodes(req.params.id);
-    // Re-fetch the newly inserted episodes
+    episodes = await Episode.find({ animeId: req.params.id })
+      .sort({ number: -1 })
+      .lean();
+  }
+
+  // Ensure metadata is synced (Netflix descriptions/thumbnails)
+  // If not already enriched, WE WAIT for it to ensure the first visit is populated
+  if (!anime.metaEnriched && episodes.length > 0) {
+    logger.info(`[Controller] First-time metadata sync for ${anime.title}...`);
+    await enrichAllEpisodesMetadata(req.params.id);
+    // Re-fetch once to get the new data
     episodes = await Episode.find({ animeId: req.params.id })
       .sort({ number: -1 })
       .lean();
@@ -288,10 +304,11 @@ const getLogo = asyncHandler(async (req, res) => {
     return res.status(404).json({ success: false, error: "Anime not found" });
   }
 
-  // Check if we already have assets in DB
-  const hasAssets = anime.logo && anime.logo.trim() !== "" && anime.fanartBackground && anime.fanartBackground.trim() !== "";
+  // Check if we have assets in DB
+  const hasLogo = anime.logo && anime.logo.trim() !== "";
+  const hasBg = anime.fanartBackground && anime.fanartBackground.trim() !== "";
   
-  if (hasAssets) {
+  if (hasLogo || hasBg) {
     return res.json({ 
       success: true, 
       data: anime.logo, 

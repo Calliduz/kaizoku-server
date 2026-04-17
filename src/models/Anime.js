@@ -249,6 +249,10 @@ const animeSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    metaEnriched: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true,

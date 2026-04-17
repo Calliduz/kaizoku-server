@@ -40,7 +40,7 @@ function createApp() {
   // ── Rate limiting ─────────────────────────────────────
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 300,
+    max: 1000, // Increased for better dev/user experience
     standardHeaders: true,
     legacyHeaders: false,
     message: {

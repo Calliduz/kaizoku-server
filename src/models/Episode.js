@@ -50,6 +50,14 @@ const episodeSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    description: {
+      type: String,
+      default: '',
+    },
+    seasonNumber: {
+      type: Number,
+      default: null,
+    },
     thumbnail: {
       type: String,
       default: '',
