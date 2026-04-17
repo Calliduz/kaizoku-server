@@ -37,10 +37,10 @@ function findBestMatch(scrapedTitle, anilistResults, threshold = DEFAULT_THRESHO
     ].filter(Boolean);
 
     for (const candidate of candidates) {
-      // Use both full ratio and partial ratio, take the higher
       const fullScore = fuzzball.ratio(scrapedTitle.toLowerCase(), candidate.toLowerCase());
       const partialScore = fuzzball.partial_ratio(scrapedTitle.toLowerCase(), candidate.toLowerCase());
-      const score = Math.max(fullScore, partialScore);
+      // Weight partial ratio heavily, but use full ratio as a tie-breaker to prefer exact length matches
+      const score = (partialScore * 0.8) + (fullScore * 0.2);
 
       if (score > bestScore) {
         bestScore = score;

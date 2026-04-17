@@ -75,9 +75,6 @@ function cleanTitle(title = "") {
     // Remove episode markers
     .replace(/episode\s+\d+/gi, "")
     .replace(/eps\s+\d+/gi, "")
-    // Remove Season markers (more robust)
-    .replace(/\d+(?:st|nd|rd|th)\s+Season/gi, "")
-    .replace(/\b(?:Season|S|Part)\s*\d+\b/gi, "")
     // Remove year markers like (2024)
     .replace(/\(\d{4}\)/g, "")
     // Remove release quality/subs
@@ -543,10 +540,10 @@ function getHeuristicBestMatch(anime, searchResults) {
 
   for (const item of searchResults) {
     for (const target of targetTitles) {
-      const score = Math.max(
-        fuzzball.ratio(item.title.toLowerCase(), target.toLowerCase()),
-        fuzzball.partial_ratio(item.title.toLowerCase(), target.toLowerCase()),
-      );
+      const fullScore = fuzzball.ratio(item.title.toLowerCase(), target.toLowerCase());
+      const partialScore = fuzzball.partial_ratio(item.title.toLowerCase(), target.toLowerCase());
+      // Weight partial ratio heavily, but use full ratio as a tie-breaker to prefer exact length matches
+      const score = (partialScore * 0.8) + (fullScore * 0.2);
       if (score > highestScore) {
         highestScore = score;
         bestItem = item;
@@ -588,13 +585,9 @@ async function linkAndFetchEpisodes(animeId) {
       // Local heuristic fuzzy match: avoids 15 seconds of AniList GraphQL requests
       for (const item of searchResults) {
         for (const target of targetTitles) {
-          const score = Math.max(
-            fuzzball.ratio(item.title.toLowerCase(), target.toLowerCase()),
-            fuzzball.partial_ratio(
-              item.title.toLowerCase(),
-              target.toLowerCase(),
-            ),
-          );
+          const fullScore = fuzzball.ratio(item.title.toLowerCase(), target.toLowerCase());
+          const partialScore = fuzzball.partial_ratio(item.title.toLowerCase(), target.toLowerCase());
+          const score = (partialScore * 0.8) + (fullScore * 0.2);
           if (score > highestScore) {
             highestScore = score;
             bestItem = item;
