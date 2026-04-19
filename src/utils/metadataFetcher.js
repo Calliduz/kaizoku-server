@@ -36,8 +36,9 @@ async function fetchEpisodeMetadata(anilistId) {
       seasonNumber: info.seasonNumber || null
     }));
   } catch (error) {
-    if (error.message.includes("Unexpected end of JSON input")) {
-      logger.error(`[Metadata] Provider balance error (AniList/TMDb) for ID ${anilistId}: ${error.message}`);
+    if (error.message.includes("Unexpected end of JSON input") || error.message.includes("JSON")) {
+      // This happens for giant series like One Piece (ID 21) where TMDb mapping times out or fails
+      logger.warn(`[Metadata] Provider mismatch (AniList/TMDb) for ID ${anilistId}. Skipping enrichment.`);
     } else {
       logger.error(`[Metadata] Failed to fetch enriched metadata: ${error.message}`);
     }

@@ -1,377 +1,157 @@
-const { fetchHtml } = require("../../utils/fetcher");
-const logger = require("../../utils/logger");
+const axios = require('axios');
+const { load } = require('cheerio');
+const logger = require('../../utils/logger');
+const GogoCDN = require('../../utils/extractors/gogocdn');
+const StreamSB = require('../../utils/extractors/streamsb');
 
-/**
- * ============================================================
- *  GOGOANIME SOURCE MODULE (Example / Template)
- * ============================================================
- *
- *  This is a pluggable source module. To add a new source:
- *  1. Copy this file to a new file (e.g. zoro.js)
- *  2. Update the selectors and extraction logic
- *  3. Register it in engine.js
- *
- *  IMPORTANT: Update the selectors below to match the target site.
- *  The current selectors are placeholders to demonstrate the pattern.
- * ============================================================
- */
+const SOURCE_NAME = 'gogoanime';
+const BASE_URL = 'https://gogoanime.by';
+const gogoCDN = new GogoCDN();
+const streamSB = new StreamSB();
 
-const SOURCE_NAME = "gogoanime";
-
-// ─── Customize these for your target site ───────────────────
-const BASE_URL = "https://gogoanime.by"; // Updated to user's requested site
-const SEARCH_PATH = "/?s="; // Correct WordPress search path
-const CATALOG_PATH = "/series/?order=update";
-
-const SELECTORS = {
-  // Search results page
-  searchResultItem: ".bs", // Container for each entry
-  // Title: use oldtitle attribute on a.tip (clean, no whitespace noise)
-  searchResultLink: "a.tip, a[itemprop='url']",
-  searchResultImage: "img",
-
-  // Catalog pages
-  catalogItem: ".listupd article.bs, .listupd .bsx, article.bs",
-  catalogLink: "a.tip, a[itemprop='url']",
-  catalogImage: "img",
-  catalogNextPage: ".hpage a.r, .hpage a.next, a.next.page-numbers",
-
-  // Anime detail page — confirmed selectors from live DOM inspection
-  episodeListContainer: ".episodes-container",
-  episodeItem: ".episode-item a",
-  episodeNumber: ".episode-item", // has data-episode-number attribute
-
-  // Episode streaming page — confirmed selectors from live DOM inspection
-  // Active server iframe is inside .player-embed; other servers have data-plain-url
-  videoIframe: ".player-embed iframe",
-  serverListItem: ".player-type-link",
+const requestHeaders = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  'Referer': BASE_URL,
 };
-// ─────────────────────────────────────────────────────────────
 
-/**
- * Search for anime on this source.
- *
- * @param {string} query - Search query string
- * @returns {Promise<Array<{ sourceId: string, title: string, url: string, image: string }>>}
- */
-async function searchAnime(query) {
+async function searchAnime(query, page = 1) {
   try {
-    const searchUrl = `${BASE_URL}${SEARCH_PATH}${encodeURIComponent(query)}`;
-    logger.info(`[${SOURCE_NAME}] Searching: ${searchUrl}`);
+    // Gogoanime.by search matches root with ?s= query
+    const res = await axios.get(
+      `${BASE_URL}/?s=${encodeURIComponent(query)}`,
+      { headers: requestHeaders }
+    );
 
-    const { $ } = await fetchHtml(searchUrl);
-    
-    // Check if we got results
-    const items = $(SELECTORS.searchResultItem);
-    if (!items.length) {
-      logger.warn(`[${SOURCE_NAME}] No search results found for "${query}"`);
-      return [];
-    }
+    const $ = load(res.data);
+    const results = [];
 
-    // Extract search results
-    const results = items.map((i, el) => {
-      const linkEl = $(el).find(SELECTORS.searchResultLink);
-      const imageEl = $(el).find(SELECTORS.searchResultImage);
+    // Search results are often <a> tags with class 'tip'
+    $('a.tip').each((i, el) => {
+      const href = $(el).attr('href') || '';
+      const title = $(el).text().trim();
+      const id = href.split('/series/').pop().split('/')[0];
+      const image = $(el).find('img').attr('src') || '';
 
-      const href = linkEl.attr("href") || "";
-      const title =
-        linkEl.attr("oldtitle") ||
-        $(el).find('h2[itemprop="headline"]').text().trim() ||
-        "";
-      
-      const image =
-        imageEl.attr("data-src") ||
-        imageEl.attr("src") ||
-        "";
-        
-      const extractId = (href) => {
-        const slug = href.replace(/\/+$/, "").split("/").pop() || "";
-        // Strip episode and release markers
-        return slug.replace(/-episode-\d+.*$/i, "")
-                   .replace(/-english-(?:subbed|dubbed).*$/i, "");
-      };
+      if (title && id && href.includes('/series/')) {
+        results.push({
+          sourceId: id,
+          title,
+          url: href.startsWith('http') ? href : `${BASE_URL}${href}`,
+          image: image.startsWith('http') ? image : `https:${image}`,
+          audio: title.toLowerCase().includes('dub') ? 'dub' : 'sub',
+        });
+      }
+    });
 
-      return {
-        sourceId: extractId(href),
-        title,
-        url: href.startsWith("http") ? href : `${BASE_URL}${href}`,
-        image,
-      };
-    }).get();
-
-    logger.info(`[${SOURCE_NAME}] Found ${results.length} results for "${query}"`);
     return results;
-  } catch (error) {
-    logger.error(`[${SOURCE_NAME}] Search error: ${error.message}`);
+  } catch (err) {
+    logger.error(`[${SOURCE_NAME}] Search error: ${err.message}`);
     return [];
   }
 }
 
-/**
- * Get episode list for an anime.
- *
- * @param {string} animeUrl - Full URL to the anime detail page
- * @returns {Promise<Array<{ number: number, sourceEpisodeId: string, url: string }>>}
- */
-async function getEpisodes(animeUrl) {
+async function getEpisodes(animeUrlOrId) {
   try {
-    logger.info(`[${SOURCE_NAME}] Fetching episodes: ${animeUrl}`);
-    const { $ } = await fetchHtml(animeUrl);
+    let url = animeUrlOrId;
+    if (!animeUrlOrId.startsWith('http')) {
+      url = `${BASE_URL}/series/${animeUrlOrId}/`;
+    }
 
-    const episodeLinks = [];
-    $(SELECTORS.episodeItem).each((_, el) => {
-      const link = $(el);
-      const parent = link.closest(".episode-item");
-      const numParse = parent.attr("data-episode-number") || link.text().replace(/\D/g, "");
-      const number = parseInt(numParse, 10);
+    const { data } = await axios.get(url, { headers: requestHeaders });
+    const $ = load(data);
 
-      const href = link.attr("href") || "";
-      const sourceEpisodeId = href.replace(/\/+$/, "").split("/").filter(Boolean).pop() || "";
+    const episodes = [];
+    $('.episodes a').each((i, el) => {
+      const href = $(el).attr('href');
+      const text = $(el).text().trim();
+      const numMatch = text.match(/Episode\s+(\d+(?:\.\d+)?)/i);
+      const number = numMatch ? parseFloat(numMatch[1]) : i + 1;
 
-      episodeLinks.push({
-        number: isNaN(number) ? episodeLinks.length + 1 : number,
-        title: link.text().trim() || `Episode ${number}`,
-        sourceEpisodeId,
-        url: href.startsWith("http") ? href : BASE_URL + href,
+      episodes.push({
+        number,
+        title: text,
+        sourceEpisodeId: href.split('/').filter(Boolean).pop(),
+        url: href.startsWith('http') ? href : `${BASE_URL}${href}`,
       });
     });
 
-    episodeLinks.sort((a, b) => a.number - b.number);
-    logger.info(`[${SOURCE_NAME}] Found ${episodeLinks.length} episodes`);
-    return episodeLinks;
-  } catch (error) {
-    logger.error(`[${SOURCE_NAME}] Episode list error: ${error.message}`);
+    return episodes.sort((a, b) => a.number - b.number);
+  } catch (err) {
+    logger.error(`[${SOURCE_NAME}] getEpisodes error: ${err.message}`);
     return [];
   }
 }
 
-/**
- * Get streaming sources for a specific episode.
- *
- * @param {string} episodeUrl - Full URL to the episode page
- * @returns {Promise<Array<{ url: string, quality: string, server: string, type: string }>>}
- */
 async function getStreamingSources(episodeUrl) {
   try {
-    logger.info(`[${SOURCE_NAME}] Fetching sources: ${episodeUrl}`);
-    const { $ } = await fetchHtml(episodeUrl);
+    const { data } = await axios.get(episodeUrl, { headers: requestHeaders });
+    const $ = load(data);
 
-    const normalize = (raw) => {
-      if (!raw) return "";
-      if (raw.startsWith("//")) return `https:${raw}`;
-      if (raw.startsWith("/")) return `${BASE_URL}${raw}`;
-      return raw;
-    };
-
-    const inferType = (url) => {
-      if (/\.m3u8(\?|$)/i.test(url)) return "hls";
-      if (/\.mp4(\?|$)/i.test(url)) return "mp4";
-      if (/\.webm(\?|$)/i.test(url)) return "webm";
-      return "iframe";
-    };
-
-    const sourcesFromServerList = [];
-    $(SELECTORS.serverListItem).each((_, el) => {
-      const item = $(el);
-      const plainUrl = normalize(item.attr("data-plain-url") || "");
-      if (!plainUrl) return;
-
-      const serverLabel = item.text().trim() || "unknown";
-      sourcesFromServerList.push({
-        url: plainUrl,
-        quality: "default",
-        server: serverLabel,
-        type: inferType(plainUrl),
-      });
+    const servers = [];
+    $('.anime_muti_link ul li').each((i, el) => {
+      let url = $(el).find('a').attr('data-video');
+      if (url) {
+        if (!url.startsWith('http')) url = `https:${url}`;
+        servers.push({
+          name: $(el).find('a').text().replace('Choose this server', '').trim(),
+          url: url,
+        });
+      }
     });
 
-    // Extract the video iframe src
-    const iframeSrc = $(SELECTORS.videoIframe).attr("src") || "";
-    const normalizedIframe = iframeSrc
-      ? iframeSrc.startsWith("http")
-        ? iframeSrc
-        : iframeSrc.startsWith("//")
-          ? `https:${iframeSrc}`
-          : `${BASE_URL}${iframeSrc}`
-      : "";
-
-    const iframeSource = normalizedIframe
-      ? {
-          url: normalizedIframe,
-          quality: "default",
-          server: SOURCE_NAME,
-          type: normalizedIframe.includes(".m3u8") ? "hls" : "iframe",
-        }
-      : null;
-
-    const deduped = [];
-    const seen = new Set();
-
-    const candidates = [...sourcesFromServerList, ...(iframeSource ? [iframeSource] : [])];
-    
-    for (const src of candidates) {
-      const key = `${src.type}|${src.url}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      let proxyTarget = src.url;
-      if (src.type === "iframe" && src.url.includes("megavid")) {
-        const apiBase = "/api/scraper";
-        proxyTarget = `${apiBase}/proxy?url=${encodeURIComponent(src.url)}&referer=${encodeURIComponent(BASE_URL)}`;
+    const sources = [];
+    for (const server of servers) {
+      if (server.name.toLowerCase().includes('vidstreaming') || server.name.toLowerCase().includes('gogo')) {
+        const extracted = await gogoCDN.extract(server.url);
+        extracted.forEach(s => sources.push({ ...s, server: 'GogoCDN', type: s.isM3U8 ? 'hls' : 'mp4' }));
+      } else if (server.name.toLowerCase().includes('streamsb')) {
+        const extracted = await streamSB.extract(server.url);
+        extracted.forEach(s => sources.push({ ...s, server: 'StreamSB', type: s.isM3U8 ? 'hls' : 'mp4' }));
       }
-
-      const lowerUrl = src.url.toLowerCase();
-      const lowerEpUrl = episodeUrl.toLowerCase();
-      const isDub = lowerUrl.includes("-dub") || lowerEpUrl.includes("-dub");
-
-      deduped.push({
-        ...src,
-        url: proxyTarget,
-        audio: isDub ? "dub" : "sub",
-        quality: src.quality === "default" ? "HD" : src.quality,
-      });
     }
 
-    deduped.sort((a, b) => {
-      const rank = (type) =>
-        type === "hls" || type === "mp4" || type === "webm" ? 0 : 1;
-      return rank(a.type) - rank(b.type);
-    });
-
-    logger.info(`[${SOURCE_NAME}] Found ${deduped.length} streaming sources`);
-    return deduped;
-  } catch (error) {
-    logger.error(`[${SOURCE_NAME}] Source extraction error: ${error.message}`);
+    return sources;
+  } catch (err) {
+    logger.error(`[${SOURCE_NAME}] getStreamingSources error: ${err.message}`);
     return [];
   }
 }
 
-/**
- * Crawl catalog pages to fetch many anime series, not just a single search query.
- *
- * @param {number} maxPages
- * @returns {Promise<Array<{ sourceId: string, title: string, url: string, image: string }>>}
- */
-async function getCatalogAnime(maxPages = 25) {
+async function getCatalogAnime(page = 1) {
   try {
-    const all = [];
-    const seen = new Set();
-    let nextUrl = `${BASE_URL}${CATALOG_PATH}`;
-    let pageCount = 0;
+    const res = await axios.get(BASE_URL, { headers: requestHeaders });
+    const $ = load(res.data);
+    const results = [];
 
-    while (nextUrl && pageCount < maxPages) {
-      pageCount += 1;
-      logger.info(`[${SOURCE_NAME}] Catalog page ${pageCount}: ${nextUrl}`);
-
-      const { $ } = await fetchHtml(nextUrl);
-
-      const items = [];
-      $(SELECTORS.catalogItem).each((_, el) => {
-        const card = $(el);
-        const linkEl = card.find(SELECTORS.catalogLink);
-        const imageEl = card.find(SELECTORS.catalogImage);
-
-        const href = linkEl.attr("href") || "";
-        const title =
-          linkEl.attr("oldtitle") ||
-          card.find('h2[itemprop="headline"]').text().trim() ||
-          "";
-
-        const url = href
-          ? href.startsWith("http")
-            ? href
-            : `${BASE_URL}${href}`
-          : "";
-
-        const image =
-          imageEl.attr("data-src") ||
-          imageEl.attr("src") ||
-          "";
-
-        const extractSeriesId = (h) => {
-          const cleaned = h.replace(/\/+$/, "");
-          const slug = cleaned.split("/").pop() || "";
-          return slug.replace(/-episode-\d+.*$/i, "")
-                     .replace(/-english-(?:subbed|dubbed).*$/i, "");
-        };
-
-        const sourceId = href ? extractSeriesId(href) : "";
-
-        if (sourceId && title && url) {
-          items.push({ sourceId, title, url, image });
-        }
-      });
-
-      const nextLink = $(SELECTORS.catalogNextPage).attr("href") || "";
-      const nextHref = nextLink
-        ? nextLink.startsWith("http")
-          ? nextLink
-          : `${BASE_URL}${nextLink}`
-        : "";
-
-      for (const item of items) {
-        if (!seen.has(item.sourceId)) {
-          seen.add(item.sourceId);
-          all.push(item);
-        }
+    // Latest series usually in a simple list on home
+    $('.last_episodes ul.items li').each((i, el) => {
+      const a = $(el).find('p.name a');
+      const href = a.attr('href') || '';
+      const id = href.split('/series/').pop().split('/')[0];
+      const title = a.attr('title') || a.text().trim();
+      
+      if (id) {
+          results.push({
+            sourceId: id,
+            title,
+            url: href.startsWith('http') ? href : `${BASE_URL}${href}`,
+          });
       }
+    });
 
-      nextUrl = nextHref;
-    }
-
-    logger.info(`[${SOURCE_NAME}] Catalog scrape yielded ${all.length} unique series`);
-    return all;
-  } catch (error) {
-    logger.error(`[${SOURCE_NAME}] Catalog scrape error: ${error.message}`);
+    return results;
+  } catch (err) {
+    logger.error(`[${SOURCE_NAME}] getCatalogAnime error: ${err.message}`);
     return [];
   }
-}
-
-/**
- * Build candidate episode URLs for this source.
- *
- * @param {{ anime: any, episode: any, fallbackUrl: string }} params
- * @returns {string[]}
- */
-function buildEpisodeUrls({ anime, episode, fallbackUrl }) {
-  const urls = [];
-
-  // Primary: use the stored sourceEpisodeId (full slug like one-piece-episode-1-english-subbed)
-  if (episode?.sourceEpisodeId) {
-    const directUrl = `${BASE_URL}/${episode.sourceEpisodeId}`;
-    urls.push(directUrl);
-    // If it doesn't already have -english-subbed variant, try that too
-    if (!episode.sourceEpisodeId.includes("english-subbed")) {
-      urls.push(`${directUrl}-english-subbed`);
-    }
-  }
-
-  // Secondary: derive slug from anime.sourceId by stripping trailing -N suffix
-  // e.g. "one-piece-1" → "one-piece", "naruto" → "naruto"
-  if (anime?.sourceId) {
-    const baseSlug = anime.sourceId.replace(/-\d+$/, "");
-    const derivedUrl = `${BASE_URL}/${baseSlug}-episode-${episode.number}-english-subbed`;
-    urls.push(derivedUrl);
-    urls.push(`${BASE_URL}/${baseSlug}-episode-${episode.number}`);
-  }
-
-  // Tertiary: use explicit fallbackUrl if provided
-  if (fallbackUrl) {
-    if (!fallbackUrl.includes("english-subbed")) {
-      urls.push(`${fallbackUrl}-english-subbed`);
-    }
-    urls.push(fallbackUrl);
-  }
-
-  return [...new Set(urls)];
 }
 
 module.exports = {
   name: SOURCE_NAME,
   BASE_URL,
   searchAnime,
-  getCatalogAnime,
-  buildEpisodeUrls,
   getEpisodes,
   getStreamingSources,
+  getCatalogAnime,
 };

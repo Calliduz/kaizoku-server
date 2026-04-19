@@ -1,0 +1,16 @@
+{
+  "verbose": true,
+  "ignore": [
+    "**/data/**",
+    "**/session.json",
+    "**/node_modules/**",
+    "data/",
+    "session.json"
+  ],
+  "watch": [
+    "src/",
+    "server.js",
+    ".env"
+  ],
+  "ext": "js,json"
+}

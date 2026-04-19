@@ -447,76 +447,114 @@ async function fetchEpisodeSources(episodeId, forceRefresh = false) {
     }
   }
 
-  // 1) Execute ALL sources in parallel for multi-source aggregation
+  // 1) Executor helper for a single source
   const aggregationStart = Date.now();
-  const sourceTasks = SOURCES.map(async (source) => {
-    try {
-      let sourceResults = [];
-      const isRecordedPrimary = source.name === anime.scrapeSource;
-      const isDefault = source.name === SOURCES[0].name;
+  const executeSource = async (source) => {
+    const timeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error(`[${source.name}] Timeout reached`)), 18000)
+    );
 
-      // Scenario A: Fast Resolve (This source is already the recorded primary)
-      if (isRecordedPrimary && anime.sourceId) {
-        sourceResults = await trySourceWithFallbacks(source, anime, episode);
-      }
+    const task = (async () => {
+        try {
+          let sourceResults = [];
+          const isRecordedPrimary = source.name === anime.scrapeSource;
 
-      // Scenario B: Deep Discovery (Check if this provider also has the content)
-      if (sourceResults.length === 0) {
-        logger.debug(`[Engine] Deep Discovery for ${source.name}...`);
-        const searchResults = await sourceLimiter.run(() =>
-          source.searchAnime(anime.title),
-        );
-        const { bestItem, score } = getHeuristicBestMatch(anime, searchResults);
+          // Scenario A: Fast Resolve
+          if (isRecordedPrimary && anime.sourceId) {
+            sourceResults = await trySourceWithFallbacks(source, anime, episode);
+          }
 
-        if (bestItem && score > 75) {
-          const altEpisodes = await sourceLimiter.run(() =>
-            source.getEpisodes(bestItem.url),
-          );
-          const matchedEp = altEpisodes.find(
-            (e) => e.number === episode.number,
-          );
-
-          if (matchedEp) {
-            sourceResults = await sourceLimiter.run(() =>
-              source.getStreamingSources(matchedEp.url),
+          // Scenario B: Deep Discovery
+          if (sourceResults.length === 0) {
+            logger.debug(`[Engine] Deep Discovery for ${source.name}...`);
+            const searchResults = await sourceLimiter.run(() =>
+              source.searchAnime(anime.title)
             );
+            const { bestItem, score } = getHeuristicBestMatch(anime, searchResults);
 
-            // Update primary binding if this source is "better" or if primary was missing
-            if (sourceResults.length > 0 && !anime.sourceId) {
-              await Anime.findByIdAndUpdate(anime._id, {
-                $set: { scrapeSource: source.name, sourceId: bestItem.sourceId },
-              });
+            if (bestItem && score > 75) {
+              const altEpisodes = await sourceLimiter.run(() =>
+                source.getEpisodes(bestItem.url)
+              );
+              const matchedEp = altEpisodes.find(
+                (e) => e.number === episode.number
+              );
+
+              if (matchedEp) {
+                sourceResults = await sourceLimiter.run(() =>
+                  source.getStreamingSources(matchedEp.url)
+                );
+
+                if (sourceResults.length > 0 && !anime.sourceId) {
+                  await Anime.findByIdAndUpdate(anime._id, {
+                    $set: { scrapeSource: source.name, sourceId: bestItem.sourceId },
+                  });
+                }
+              }
             }
           }
+
+          if (!sourceResults || sourceResults.length === 0) return [];
+
+          return sourceResults.map((s) => ({
+            ...s,
+            server: `${source.name.charAt(0).toUpperCase() + source.name.slice(1)} - ${s.server || "Stream"}`,
+            provider: source.name,
+          }));
+        } catch (err) {
+          logger.error(`[Engine] Aggregator task for ${source.name} failed: ${err.message}`);
+          return [];
         }
+    })();
+
+    return Promise.race([task, timeout]).catch(err => {
+        logger.warn(`[Engine] ${err.message}`);
+        return [];
+    });
+  };
+
+  // 2) Fast-Path: Always try AnimePahe first, then the recorded DB source
+  let allSources = [];
+  const preferredSource = SOURCES.find(s => s.name === 'animepahe');
+  const recordedSource = SOURCES.find(s => s.name === anime.scrapeSource);
+  
+  // Use Set to remove duplicates if animepahe is already the recorded source
+  const sourcesToTryFirst = [...new Set([preferredSource, recordedSource].filter(Boolean))];
+  
+  for (const src of sourcesToTryFirst) {
+    if (allSources.length > 0) break;
+    
+    logger.info(`[Engine] Fast-Path: Executing "${src.name}"...`);
+    const results = await executeSource(src);
+    
+    if (results && results.length > 0) {
+      logger.info(`[Engine] Fast-Path succeeded on ${src.name}! Skipping parallel aggregation.`);
+      allSources = results;
+    }
+  }
+
+  // 3) Aggregation Fallback: If Fast-Path failed, run everything else in parallel
+  if (allSources.length === 0) {
+    logger.info(`[Engine] Secondary fallback: running remaining sources in parallel...`);
+    // Filter out the ones we already tried
+    const triedNames = new Set(sourcesToTryFirst.map(s => s.name));
+    const fallbackSources = SOURCES.filter(s => !triedNames.has(s.name));
+    const sourceTasks = fallbackSources.map(source => executeSource(source));
+    
+    const results = await Promise.allSettled(sourceTasks);
+    results.forEach((res) => {
+      if (res.status === "fulfilled" && Array.isArray(res.value)) {
+        res.value.forEach(src => allSources.push(src));
       }
+    });
+  }
 
-      // Tag results with provider name for the UI
-      return sourceResults.map((s) => ({
-        ...s,
-        server: `${source.name.charAt(0).toUpperCase() + source.name.slice(1)} - ${s.server || "Stream"}`,
-        provider: source.name,
-      }));
-    } catch (err) {
-      logger.error(`[Engine] Aggregator task for ${source.name} failed: ${err.message}`);
-      return [];
-    }
-  });
-
-  // Wait for all sources to settle (max 15s timeout for the whole bundle)
-  const results = await Promise.allSettled(sourceTasks);
-  const allSources = [];
+  // 4) Filter out duplicate URLs
   const seenUrls = new Set();
-
-  results.forEach((res) => {
-    if (res.status === "fulfilled" && Array.isArray(res.value)) {
-      res.value.forEach((src) => {
-        if (!seenUrls.has(src.url)) {
-          seenUrls.add(src.url);
-          allSources.push(src);
-        }
-      });
-    }
+  allSources = allSources.filter(src => {
+    if (seenUrls.has(src.url)) return false;
+    seenUrls.add(src.url);
+    return true;
   });
 
   const duration = Date.now() - aggregationStart;

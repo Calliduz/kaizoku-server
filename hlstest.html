@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head><script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script></head>
+<body>
+  <video id="video" controls></video>
+  <script>
+    var video = document.getElementById("video");
+    const testUrl = "http://localhost:5000/api/scraper/proxy?url=https%3A%2F%2Fvault-99.owocdn.top%2Fstream%2F99%2F01%2F1bf9ad34ecb4f5d468c0ee1e58aee9177b83595c71e3a3c61debef00fcc53681%2Fuwu.m3u8&referer=https%3A%2F%2Fkwik.cx%2Fe%2F6fvhCY3yPiXH";
+    if (Hls.isSupported()) {
+      var hls = new Hls({ debug: true });
+      hls.loadSource(testUrl);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.ERROR, function (event, data) { console.log("HLS ERROR", data); });
+    }
+  </script>
+</body>
+</html>

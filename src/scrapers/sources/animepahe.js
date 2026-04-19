@@ -1,347 +1,340 @@
-const axios = require("axios");
-const cheerio = require("cheerio");
-const puppeteerPool = require("../../utils/puppeteerPool");
-const logger = require("../../utils/logger");
+require('dotenv').config();
+const axios = require('axios');
+const logger = require('../../utils/logger');
+const Kwik = require('../../utils/extractors/kwik');
+const puppeteerPool = require('../../utils/puppeteerPool');
 
-/**
- * AnimePahe Scraper Module
- * Ported from User's TypeScript implementation.
- */
+const SOURCE_NAME = 'animepahe';
+const BASE_URL = 'https://animepahe.pw';
+const kwikExtractor = new Kwik();
 
-const SOURCE_NAME = "animepahe";
-const BASE_URL = "https://animepahe.pw";
-const API_URL = "https://animepahe.pw/api";
+// ── Cookie Store ──────────────────────────────────────────────────────────────
+// DDoS-Guard validates __ddg1_ (a JS challenge token). Axios can't solve it.
+// We use real browser cookies either from:
+//   A) ANIMEPAHE_COOKIES env var (manual paste — good for hours)
+//   B) Puppeteer fallback (auto-refreshes when A expires)
 
-const requestHeaders = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  Accept: "application/json, text/plain, */*",
-  "Accept-Language": "en-US,en;q=0.9",
-  Referer: BASE_URL,
+const cookieStore = {
+    cookies: process.env.ANIMEPAHE_COOKIES || '',
+    lastRefresh: process.env.ANIMEPAHE_COOKIES ? Date.now() : 0,
+    refreshing: null,
+    TTL: 90 * 60 * 1000, // 90 minutes
+
+    isStale() {
+        return !this.cookies || (Date.now() - this.lastRefresh > this.TTL);
+    },
+
+    set(cookieString) {
+        this.cookies = cookieString;
+        this.lastRefresh = Date.now();
+        logger.info(`[${SOURCE_NAME}] Cookie store updated.`);
+    },
+
+    /** Refresh via Puppeteer — acquires a real browser to solve the DDoS-Guard challenge */
+    async refresh() {
+        if (this.refreshing) return this.refreshing;
+
+        this.refreshing = (async () => {
+            logger.warn(`[${SOURCE_NAME}] Cookie store stale — launching browser to refresh...`);
+            const browser = await puppeteerPool.acquire();
+            const page = await browser.newPage();
+            try {
+                await page.setUserAgent(
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
+                );
+                await page.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+
+                // Wait for DDoS-Guard challenge to resolve (title won't say "DDoS")
+                await page.waitForFunction(
+                    () => !document.title.toLowerCase().includes('ddos') && document.body.innerText.length > 100,
+                    { timeout: 20000 }
+                ).catch(() => {});
+
+                const raw = await page.cookies();
+                const cookieString = raw.map(c => `${c.name}=${c.value}`).join('; ');
+                this.set(cookieString);
+            } finally {
+                await page.close().catch(() => {});
+                this.refreshing = null;
+            }
+        })();
+
+        return this.refreshing;
+    },
+
+    /** Ensure cookies are fresh before any request */
+    async ensure() {
+        if (this.isStale()) await this.refresh();
+    },
 };
 
-let cachedCookies = "";
+// ── Shared Axios Client ───────────────────────────────────────────────────────
+const client = axios.create({
+    baseURL: BASE_URL,
+    timeout: 12000,
+    headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.8',
+        'sec-ch-ua': '"Chromium";v="147", "Not.A/Brand";v="8"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'upgrade-insecure-requests': '1',
+    },
+});
 
 /**
- * Wait for DDOS-GUARD or similar challenge bypass
+ * Make an API GET request with DDoS-Guard session cookies.
+ * Auto-refreshes cookies on 403 and retries once.
  */
-async function waitForChallengeBypass(page, timeoutMs = 60000) {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
+async function apiGet(path, isJson = true) {
+    await cookieStore.ensure();
+
+    const headers = {
+        'Cookie': cookieStore.cookies,
+        'Referer': BASE_URL,
+        'Accept': isJson
+            ? 'application/json, text/plain, */*'
+            : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    };
+
     try {
-      const challengeState = await page.evaluate(() => {
-        const title = String(document.title || "");
-        const bodyText = String(document.body?.innerText || "");
-        const normalized = `${title}\n${bodyText}`.toLowerCase();
-        const blocked =
-          normalized.includes(
-            "checking your browser before accessing animepahe.com",
-          ) || normalized.includes("ddos-guard");
-        return { blocked, title };
-      });
-
-      if (!challengeState.blocked) return true;
-    } catch (e) {
-      // ignore eval error
+        const { data } = await client.get(path, { headers });
+        return data;
+    } catch (err) {
+        if (err.response?.status === 403 || err.response?.status === 401) {
+            logger.warn(`[${SOURCE_NAME}] ${err.response.status} on "${path}" — refreshing cookies and retrying...`);
+            cookieStore.lastRefresh = 0; // Force stale
+            await cookieStore.ensure();
+            const { data } = await client.get(path, {
+                headers: {
+                    ...headers,
+                    'Cookie': cookieStore.cookies,
+                },
+            });
+            return data;
+        }
+        throw err;
     }
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-  }
-  return false;
 }
 
-/**
- * Search anime on AnimePahe
- */
+// ── Source Cache (5 min TTL) ──────────────────────────────────────────────────
+const sourceCache = new Map();
+const SOURCE_CACHE_TTL = 5 * 60 * 1000;
+function getCached(key) {
+    const h = sourceCache.get(key);
+    return h && Date.now() - h.ts < SOURCE_CACHE_TTL ? h.data : null;
+}
+function setCache(key, data) { sourceCache.set(key, { data, ts: Date.now() }); }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEARCH
+// ─────────────────────────────────────────────────────────────────────────────
 async function searchAnime(query) {
-  const searchUrl = `${API_URL}?m=search&q=${encodeURIComponent(query)}`;
-
-  try {
-    // Fast path: direct API
-    const response = await axios.get(searchUrl, {
-      headers: requestHeaders,
-      timeout: 10000,
-    });
-
-    // Safety Check: Verify response is actually JSON before parsing
-    // DDoS-guard often returns HTML here
-    if (typeof response.data !== "object" || response.data === null) {
-      if (
-        typeof response.data === "string" &&
-        response.data.toLowerCase().includes("checking your browser")
-      ) {
-        logger.warn(
-          `[${SOURCE_NAME}] API returned DDoS-guard challenge. Falling back to browser...`,
-        );
-        throw new Error("DDoS Challenge Detected");
-      }
+    try {
+        const data = await apiGet(`/api?m=search&q=${encodeURIComponent(query)}`);
+        return data?.data?.map((item) => ({
+            sourceId: item.session,
+            title: item.title,
+            url: `${BASE_URL}/anime/${item.session}`,
+            image: item.poster,
+            type: item.type,
+        })) || [];
+    } catch (err) {
+        logger.error(`[${SOURCE_NAME}] searchAnime error: ${err.message}`);
+        return [];
     }
-
-    if (response.data && Array.isArray(response.data.data)) {
-      return response.data.data.map((item) => ({
-        sourceId: item.session, // Use session as unique sourceId
-        title: item.title,
-        url: `${BASE_URL}/anime/${item.session}`,
-        image: item.poster,
-      }));
-    }
-  } catch (error) {
-    // Fall back to browser path
-  }
-
-  const browser = await puppeteerPool.acquire();
-  const page = await browser.newPage();
-  try {
-    await page.setUserAgent(requestHeaders["User-Agent"]);
-    await page.goto(searchUrl, {
-      waitUntil: "domcontentloaded",
-      timeout: 15000,
-    });
-
-    // Wait for JSON
-    await page
-      .waitForFunction(() => document.body.innerText.trim().startsWith("{"), {
-        timeout: 8000,
-      })
-      .catch(() => {});
-    const cookies = await page.cookies();
-    if (cookies.length > 0)
-      cachedCookies = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-    const responseText = await page.evaluate(() => document.body.innerText);
-    const response = JSON.parse(responseText);
-
-    if (response && response.data) {
-      return response.data.map((item) => ({
-        sourceId: item.session,
-        title: item.title,
-        url: `${BASE_URL}/anime/${item.session}`,
-        image: item.poster,
-      }));
-    }
-    return [];
-  } catch (error) {
-    logger.error(`[${SOURCE_NAME}] Search error: ${error.message}`);
-    return [];
-  } finally {
-    await page.close().catch(() => {});
-  }
 }
 
-/**
- * Get episode list
- */
-async function getEpisodes(animeUrl) {
-  const session = animeUrl.split("/").pop();
-  const episodesApiUrl = `${API_URL}?m=release&id=${session}&sort=episode_asc&page=1`;
+// ─────────────────────────────────────────────────────────────────────────────
+// EPISODES  (parallel page fetch)
+// ─────────────────────────────────────────────────────────────────────────────
+async function getEpisodes(animeUrlOrId) {
+    try {
+        const id = animeUrlOrId.includes('/anime/')
+            ? animeUrlOrId.split('/').pop()
+            : animeUrlOrId;
 
-  const mapApiEpisodes = (items) =>
-    items.map((item) => ({
-      number: item.episode,
-      title: item.title || `Episode ${item.episode}`,
-      sourceEpisodeId: item.session, // Crucial: AnimePahe uses episode session for play links
-      url: `${BASE_URL}/play/${session}/${item.session}`,
-    }));
+        const first = await apiGet(`/api?m=release&id=${id}&sort=episode_asc&page=1`);
+        if (!first?.data) return [];
 
-  try {
-    const headers = { ...requestHeaders };
-    if (cachedCookies) headers.Cookie = cachedCookies;
+        let eps = [...first.data];
+        const lastPage = first.last_page || 1;
 
-    const response = await axios.get(episodesApiUrl, { headers });
-    if (response.data && Array.isArray(response.data.data)) {
-      let eps = [...response.data.data];
-      const lastPage = response.data.last_page || 1;
-
-      for (let p = 2; p <= lastPage; p++) {
-        try {
-          const nextResp = await axios.get(
-            episodesApiUrl.replace("page=1", `page=${p}`),
-            { headers },
-          );
-          if (nextResp.data?.data) {
-            eps = eps.concat(nextResp.data.data);
-          }
-        } catch (e) {
-          logger.warn(
-            `[${SOURCE_NAME}] Failed to fetch page ${p} with axios: ${e.message}`,
-          );
+        if (lastPage > 1) {
+            const pages = await Promise.all(
+                Array.from({ length: lastPage - 1 }, (_, i) =>
+                    apiGet(`/api?m=release&id=${id}&sort=episode_asc&page=${i + 2}`)
+                        .then(d => d?.data || [])
+                        .catch(() => [])
+                )
+            );
+            for (const p of pages) eps = eps.concat(p);
         }
-      }
-      return mapApiEpisodes(eps);
+
+        return eps.map((item) => ({
+            number: item.episode,
+            title: item.title || `Episode ${item.episode}`,
+            sourceEpisodeId: item.session,
+            url: `${BASE_URL}/play/${id}/${item.session}`,
+            thumbnail: item.snapshot,
+        }));
+    } catch (err) {
+        logger.error(`[${SOURCE_NAME}] getEpisodes error: ${err.message}`);
+        return [];
     }
-  } catch (err) {
-    logger.warn(
-      `[${SOURCE_NAME}] API getEpisodes failed, trying browser fallback: ${err.message}`,
-    );
-  }
+}
 
-  // Browser Fallback for DDOS guard
-  const browser = await puppeteerPool.acquire();
-  const page = await browser.newPage();
-  try {
-    await page.setUserAgent(requestHeaders["User-Agent"]);
+// ─────────────────────────────────────────────────────────────────────────────
+// STREAMING SOURCES  — parse #resolutionMenu from the play page
+//
+//  The /api?m=links endpoint is unavailable on .pw. Instead we load the
+//  play page with Axios (cookies bypass DDoS-Guard instantly) and parse
+//  the Kwik URLs from the <button data-src> elements (~300ms total).
+//  All Kwik decoding runs in PARALLEL → sub-second stream list.
+// ─────────────────────────────────────────────────────────────────────────────
+async function getStreamingSources(episodeUrlOrSession) {
+    const playUrl = buildPlayUrl(episodeUrlOrSession);
+    if (!playUrl) {
+        logger.error(`[${SOURCE_NAME}] Cannot build play URL from: ${episodeUrlOrSession}`);
+        return [];
+    }
 
-    let allData = [];
-    let currentPage = 1;
-    let lastPage = 1;
+    const cacheKey = extractSession(episodeUrlOrSession) || playUrl;
+    const cached = getCached(cacheKey);
+    if (cached) {
+        logger.debug(`[${SOURCE_NAME}] Cache hit for: ${cacheKey}`);
+        return cached;
+    }
 
-    do {
-      const pagedUrl = episodesApiUrl.replace("page=1", `page=${currentPage}`);
-      await page.goto(pagedUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: 15000,
-      });
-      await page
-        .waitForFunction(() => document.body.innerText.trim().startsWith("{"), {
-          timeout: 8000,
+    try {
+        logger.debug(`[${SOURCE_NAME}] Loading play page: ${playUrl}`);
+        const html = await apiGet(playUrl, false /* want HTML, not JSON */);
+
+        const cheerio = require('cheerio');
+        const $ = cheerio.load(html);
+
+        const links = [];
+        $('#resolutionMenu button[data-src]').each((_, el) => {
+            const kwikUrl = $(el).attr('data-src');
+            const resolution = $(el).attr('data-resolution') || '720';
+            const audio = $(el).attr('data-audio') || 'jpn';
+            if (kwikUrl && kwikUrl.includes('kwik')) links.push({ quality: resolution, kwikUrl, audio, referer: playUrl });
+        });
+
+        if (links.length === 0) {
+            logger.warn(`[${SOURCE_NAME}] No Kwik links found in play page: ${playUrl}`);
+            return [];
+        }
+
+        logger.info(`[${SOURCE_NAME}] Found ${links.length} Kwik links. Resolving streams in parallel...`);
+        const sources = await resolveKwikLinks(links);
+
+        if (sources.length > 0) setCache(cacheKey, sources);
+        return sources;
+    } catch (err) {
+        logger.error(`[${SOURCE_NAME}] getStreamingSources error: ${err.message}`);
+        return [];
+    }
+}
+
+async function resolveKwikLinks(links) {
+    const settled = await Promise.allSettled(
+        links.map(async (link) => {
+            try {
+                const extracted = await kwikExtractor.extract(link.kwikUrl);
+                if (!extracted?.length) throw new Error('Empty extraction');
+
+                const { url: directUrl, isM3U8 } = extracted[0];
+                const qualityLabel = link.quality.includes('p') ? link.quality : `${link.quality}p`;
+
+                return {
+                    url: isM3U8
+                        ? `/api/scraper/proxy?url=${encodeURIComponent(directUrl)}&referer=${encodeURIComponent(link.kwikUrl)}`
+                        : directUrl,
+                    quality: qualityLabel,
+                    server: 'kwik',
+                    type: isM3U8 ? 'hls' : 'mp4',
+                    audio: link.audio === 'jpn' ? 'sub' : 'dub',
+                };
+            } catch (err) {
+                // Graceful fallback: expose the iframe URL — the client can render it
+                logger.warn(`[${SOURCE_NAME}] Kwik extract failed (${link.kwikUrl}): ${err.message}`);
+                return {
+                    url: link.kwikUrl,
+                    quality: link.quality.includes('p') ? link.quality : `${link.quality}p`,
+                    server: 'kwik',
+                    type: 'iframe',
+                    audio: link.audio === 'jpn' ? 'sub' : 'dub',
+                };
+            }
         })
-        .catch(() => {});
-      const cookies = await page.cookies();
-      if (cookies.length > 0)
-        cachedCookies = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-      const responseText = await page.evaluate(() => document.body.innerText);
-      try {
-        const responseJson = JSON.parse(responseText);
-        if (responseJson && Array.isArray(responseJson.data)) {
-          allData = allData.concat(responseJson.data);
-          lastPage = responseJson.last_page || 1;
-        }
-      } catch (parseErr) {
-        logger.error(
-          `[${SOURCE_NAME}] Failed to parse JSON from browser on page ${currentPage}`,
-        );
-        break; // Stop paginating on error
-      }
-
-      currentPage++;
-    } while (currentPage <= lastPage);
-
-    return mapApiEpisodes(allData);
-  } catch (error) {
-    logger.error(
-      `[${SOURCE_NAME}] getEpisodes Browser fallback failed: ${error.message}`,
     );
-  } finally {
-    await page.close().catch(() => {});
-  }
 
-  return [];
+    return settled.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value);
 }
 
-/**
- * Extract streaming sources
- */
-async function getStreamingSources(episodeUrl) {
-  const browser = await puppeteerPool.acquire();
-  const page = await browser.newPage();
-  try {
-    await page.setUserAgent(requestHeaders["User-Agent"]);
-    await page.goto(episodeUrl, {
-      waitUntil: "domcontentloaded",
-      timeout: 30000,
-    });
-    await waitForChallengeBypass(page);
-
-    await page.waitForSelector("#resolutionMenu button", { timeout: 10000 });
-
-    const links = await page.evaluate(() => {
-      const buttons = document.querySelectorAll("#resolutionMenu button");
-      return Array.from(buttons).map((btn) => ({
-        url: btn.getAttribute("data-src"),
-        quality: btn.getAttribute("data-resolution") || "720",
-        audio: btn.getAttribute("data-audio") || "jpn",
-      }));
-    });
-
-    return links.map((link) => ({
-      url: link.url, // Kwik.cx link
-      quality: link.quality.includes("p") ? link.quality : `${link.quality}p`,
-      audio: "sub",
-      server: "kwik",
-      type: "iframe",
-    }));
-  } catch (error) {
-    logger.error(`[${SOURCE_NAME}] Source extraction error: ${error.message}`);
-    return [];
-  } finally {
-    await page.close().catch(() => {});
-  }
-}
-
-/**
- * Crawl catalog (Latest Releases)
- */
-async function getCatalogAnime(maxPages = 5) {
-  // Use AnimePahe API for latest releases
-  const all = [];
-  const seen = new Set();
-
-  try {
-    for (let p = 1; p <= maxPages; p++) {
-      const resp = await axios.get(
-        `${API_URL}?m=release&sort=episode_desc&page=${p}`,
-        { headers: requestHeaders },
-      );
-      if (resp.data?.data) {
-        for (const item of resp.data.data) {
-          // Since it's a list of episodes, we need the anime session
-          // The API for latest releases might not provide the anime session directly.
-          // Let's use the search fallback if not available, or crawl the homepage.
-        }
-      }
+// ─────────────────────────────────────────────────────────────────────────────
+// CATALOG
+// ─────────────────────────────────────────────────────────────────────────────
+async function getCatalogAnime(page = 1) {
+    try {
+        const data = await apiGet(`/api?m=release&sort=episode_desc&page=${page}`);
+        return data?.data?.map(item => ({
+            sourceId: item.anime_session || item.session,
+            title: item.anime_title || item.title,
+            url: `${BASE_URL}/anime/${item.anime_session || item.session}`,
+            image: item.snapshot || item.poster,
+        })) || [];
+    } catch (err) {
+        logger.error(`[${SOURCE_NAME}] getCatalogAnime error: ${err.message}`);
+        return [];
     }
-  } catch (e) {}
+}
 
-  // Real world fallback: Scrape homepage
-  const browser = await puppeteerPool.acquire();
-  const page = await browser.newPage();
-  try {
-    await page.setUserAgent(requestHeaders["User-Agent"]);
-    await page.goto(BASE_URL, { waitUntil: "domcontentloaded" });
-    await waitForChallengeBypass(page);
+// ─────────────────────────────────────────────────────────────────────────────
+// ENGINE INTEGRATION
+// ─────────────────────────────────────────────────────────────────────────────
+function buildEpisodeUrls({ episode, anime }) {
+    const urls = [];
+    // Prefer the stored play URL
+    if (episode.url) {
+        urls.push(episode.url);
+    }
+    // Deep fallback: Reconstruct URL from old database entries
+    else if (episode.sourceEpisodeId && anime && anime.sourceId) {
+        urls.push(`${BASE_URL}/play/${anime.sourceId}/${episode.sourceEpisodeId}`);
+    }
+    return urls;
+}
 
-    const items = await page.evaluate(() => {
-      const cards = document.querySelectorAll(".latest-release .box");
-      return Array.from(cards).map((card) => {
-        const link = card.querySelector("a");
-        const img = card.querySelector("img");
-        const animeUrl = link?.getAttribute("href") || "";
-        const session = animeUrl.split("/").pop();
-        return {
-          sourceId: session,
-          title: link?.getAttribute("title") || "",
-          url: animeUrl.startsWith("http")
-            ? animeUrl
-            : `https://animepahe.pw${animeUrl}`,
-          image:
-            img?.getAttribute("src") || img?.getAttribute("data-src") || "",
-        };
-      });
-    });
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS
+// ─────────────────────────────────────────────────────────────────────────────
 
-    return items.filter((i) => i.sourceId && i.title);
-  } finally {
-    await page.close().catch(() => {});
-  }
+/**
+ * If input is already a full play URL, return it.
+ * If it's a bare session ID we can't build the URL (need both anime+episode),
+ * so we return null and let the engine fall through to deep discovery.
+ */
+function buildPlayUrl(input) {
+    if (!input) return null;
+    if (input.startsWith('http')) return input; // already a full URL
+    // Can't reconstruct play URL from session alone — return null
+    return null;
+}
+
+function extractSession(input) {
+    if (!input) return null;
+    if (input.startsWith('http')) return input.replace(/\/$/, '').split('/').pop() || null;
+    return input; // already a session ID
 }
 
 module.exports = {
-  name: SOURCE_NAME,
-  BASE_URL,
-  searchAnime,
-  getEpisodes,
-  getStreamingSources,
-  getCatalogAnime,
-  async buildEpisodeUrls({ anime, episode }) {
-    if (!anime.sourceId) return [];
-    try {
-      // Since anime.sourceId is the Animepahe session ID, we can fetch its episodes directly
-      const eps = await getEpisodes(`${BASE_URL}/anime/${anime.sourceId}`);
-      const matched = eps.find((e) => e.number === episode.number);
-      if (matched) return [matched.url];
-    } catch (error) {
-      logger.warn(
-        `[${SOURCE_NAME}] Failed to build episode URL for ${anime.title} Ep ${episode.number}: ${error.message}`,
-      );
-    }
-    return [];
-  },
+    name: SOURCE_NAME,
+    BASE_URL,
+    searchAnime,
+    getEpisodes,
+    getStreamingSources,
+    getCatalogAnime,
+    buildEpisodeUrls,
 };
