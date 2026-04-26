@@ -131,7 +131,15 @@ function setCache(key, data) { sourceCache.set(key, { data, ts: Date.now() }); }
 // ─────────────────────────────────────────────────────────────────────────────
 async function searchAnime(query) {
     try {
-        const data = await apiGet(`/api?m=search&q=${encodeURIComponent(query)}`);
+        const cleanedQuery = query.replace(/cour\s*(\d+)/i, 'Part $1').replace(/season\s*(\d+)/i, 'Season $1').trim();
+        let data = await apiGet(`/api?m=search&q=${encodeURIComponent(cleanedQuery)}`);
+        
+        if (!data?.data || data.data.length === 0) {
+            const broaderQuery = query.replace(/(cour|season|part)\s*\d+/i, '').trim();
+            if (broaderQuery && broaderQuery !== query) {
+                data = await apiGet(`/api?m=search&q=${encodeURIComponent(broaderQuery)}`);
+            }
+        }
         return data?.data?.map((item) => ({
             sourceId: item.session,
             title: item.title,
