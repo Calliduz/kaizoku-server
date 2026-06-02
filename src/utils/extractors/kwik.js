@@ -12,7 +12,7 @@ const axios = require('axios');
 class Kwik {
     constructor() {
         this.serverName = 'kwik';
-        this.referer = 'https://animepahe.com';
+        this.referer = 'https://animepahe.pw/';
         this.client = axios.create({
             timeout: 10000,
             headers: {
