@@ -246,27 +246,8 @@ async function getStreamingSources(episodeUrlOrSession) {
 }
 
 async function resolveKwikLinks(links) {
-    const promises = links.map(async (link) => {
+    return links.map((link) => {
         const qualityLabel = link.quality.includes('p') ? link.quality : `${link.quality}p`;
-        try {
-            kwikExtractor.referer = 'https://animepahe.pw/';
-            const extracted = await kwikExtractor.extract(link.kwikUrl);
-            if (extracted && extracted.length > 0) {
-                const streamUrl = extracted[0].url;
-                const proxiedUrl = `/api/scraper/proxy?url=${encodeURIComponent(streamUrl)}&referer=${encodeURIComponent('https://kwik.cx/')}`;
-                return {
-                    url: proxiedUrl,
-                    quality: qualityLabel,
-                    server: 'kwik',
-                    type: 'hls',
-                    audio: link.audio === 'jpn' ? 'sub' : 'dub',
-                };
-            }
-        } catch (err) {
-            logger.error(`[${SOURCE_NAME}] Failed to extract stream for ${link.kwikUrl}: ${err.message}`);
-        }
-        
-        // Fallback to iframe if extraction fails
         return {
             url: link.kwikUrl,
             quality: qualityLabel,
@@ -275,8 +256,6 @@ async function resolveKwikLinks(links) {
             audio: link.audio === 'jpn' ? 'sub' : 'dub',
         };
     });
-    
-    return Promise.all(promises);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
