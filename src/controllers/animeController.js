@@ -249,6 +249,13 @@ const getEpisodes = asyncHandler(async (req, res) => {
     }
   }
 
+  // Trigger background check for new episodes if not already scraping
+  if (!isScraping) {
+    linkAndFetchEpisodes(req.params.id).catch(err => 
+      logger.error(`[Controller] linkAndFetchEpisodes background update failed: ${err.message}`)
+    );
+  }
+
   res.json({ success: true, data: episodes, isScraping });
 });
 

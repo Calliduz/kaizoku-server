@@ -40,7 +40,7 @@ const cookieStore = {
             const page = await browser.newPage();
             try {
                 await page.setUserAgent(
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36'
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36'
                 );
                 await page.goto(BASE_URL, { waitUntil: 'networkidle2', timeout: 30000 });
 
@@ -73,9 +73,9 @@ const client = axios.create({
     baseURL: BASE_URL,
     timeout: 12000,
     headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
         'Accept-Language': 'en-US,en;q=0.8',
-        'sec-ch-ua': '"Chromium";v="147", "Not.A/Brand";v="8"',
+        'sec-ch-ua': '"Chromium";v="148", "Google Chrome";v="148", "Not-A.Brand";v="99"',
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Windows"',
         'upgrade-insecure-requests': '1',

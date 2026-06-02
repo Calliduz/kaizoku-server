@@ -77,15 +77,16 @@ router.get("/proxy", async (req, res) => {
   try {
     const targetUrl = new URL(url);
     
-    // Removing the strict Origin calculation. For CDNs like vault-*.owocdn.top, 
-    // specifying a fabricated Origin on a GET request often triggers a Cloudflare 400 Bad Request error.
     const requestHeaders = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
         "Referer": referer || targetUrl.origin,
         "Accept": "*/*",
         "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "identity", // Force raw binary to prevent Axios auto-decompression length mismatches
         "Connection": "keep-alive",
+        "sec-ch-ua": '"Chromium";v="148", "Google Chrome";v="148", "Not-A.Brand";v="99"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
     };
 
     // Forward Range header for video segments

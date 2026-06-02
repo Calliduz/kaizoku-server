@@ -646,6 +646,8 @@ function getHeuristicBestMatch(anime, searchResults) {
  * @param {string} animeId - MongoDB Anime _id
  */
 async function linkAndFetchEpisodes(animeId) {
+  if (activeScrapes.has(animeId)) return;
+
   const anime = await Anime.findById(animeId);
   if (!anime) return;
   
@@ -668,11 +670,13 @@ async function linkAndFetchEpisodes(animeId) {
     }
 
     // Otherwise, trigger background refresh
-    scrapeEpisodes(anime._id, anime.sourceId, SOURCES.find(s => s.name === anime.scrapeSource)).catch(() => {});
+    activeScrapes.add(animeId);
+    scrapeEpisodes(anime._id, anime.sourceId, SOURCES.find(s => s.name === anime.scrapeSource))
+      .catch((err) => logger.error(`[Engine] Background scrape failed: ${err.message}`))
+      .finally(() => activeScrapes.delete(animeId));
     return;
   }
 
-  if (activeScrapes.has(animeId)) return;
   activeScrapes.add(animeId);
 
   logger.info(
