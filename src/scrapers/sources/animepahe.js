@@ -246,39 +246,17 @@ async function getStreamingSources(episodeUrlOrSession) {
 }
 
 async function resolveKwikLinks(links) {
-    const settled = await Promise.allSettled(
-        links.map(async (link) => {
-            try {
-                const extracted = await kwikExtractor.extract(link.kwikUrl);
-                if (!extracted?.length) throw new Error('Empty extraction');
-
-                const { url: directUrl, isM3U8 } = extracted[0];
-                const qualityLabel = link.quality.includes('p') ? link.quality : `${link.quality}p`;
-
-                return {
-                    url: isM3U8
-                        ? `/api/scraper/proxy?url=${encodeURIComponent(directUrl)}&referer=${encodeURIComponent(link.kwikUrl)}`
-                        : directUrl,
-                    quality: qualityLabel,
-                    server: 'kwik',
-                    type: isM3U8 ? 'hls' : 'mp4',
-                    audio: link.audio === 'jpn' ? 'sub' : 'dub',
-                };
-            } catch (err) {
-                // Graceful fallback: expose the iframe URL — the client can render it
-                logger.warn(`[${SOURCE_NAME}] Kwik extract failed (${link.kwikUrl}): ${err.message}`);
-                return {
-                    url: link.kwikUrl,
-                    quality: link.quality.includes('p') ? link.quality : `${link.quality}p`,
-                    server: 'kwik',
-                    type: 'iframe',
-                    audio: link.audio === 'jpn' ? 'sub' : 'dub',
-                };
-            }
-        })
-    );
-
-    return settled.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value);
+    // Extractor is disabled temporarily - return iframe fallback links directly
+    return links.map((link) => {
+        const qualityLabel = link.quality.includes('p') ? link.quality : `${link.quality}p`;
+        return {
+            url: link.kwikUrl,
+            quality: qualityLabel,
+            server: 'kwik',
+            type: 'iframe',
+            audio: link.audio === 'jpn' ? 'sub' : 'dub',
+        };
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

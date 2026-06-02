@@ -451,7 +451,7 @@ async function fetchEpisodeSources(episodeId, forceRefresh = false) {
   const aggregationStart = Date.now();
   const executeSource = async (source) => {
     const timeout = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error(`[${source.name}] Timeout reached`)), 18000)
+        setTimeout(() => reject(new Error(`[${source.name}] Timeout reached`)), 8000)
     );
 
     const task = (async () => {
