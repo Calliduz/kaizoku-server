@@ -57,7 +57,7 @@ const animepahe = require("./sources/animepahe");
 const aniwatch = require("./sources/aniwatch");
 const animekai = require("./sources/animekai");
 
-const SOURCES = [animepahe, animekai, gogoanime, aniwatch];
+const SOURCES = [animepahe];
 
 // Track ongoing scrapes to prevent redundant work and inform UI
 const activeScrapes = new Set();
