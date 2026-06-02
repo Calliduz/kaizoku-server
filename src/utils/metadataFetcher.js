@@ -21,24 +21,31 @@ async function fetchEpisodeMetadata(anilistId) {
   try {
     logger.info(`[Metadata] Fetching enriched episode data for AniList ID: ${anilistId}`);
     
-    // fetchAnimeInfo gets data from AniList + TMDb/TVDB cross-reference
-    const info = await anilist.fetchAnimeInfo(anilistId);
-    
-    if (!info || !info.episodes) {
-      return [];
-    }
+    const fetchTask = (async () => {
+      // fetchAnimeInfo gets data from AniList + TMDb/TVDB cross-reference
+      const info = await anilist.fetchAnimeInfo(anilistId);
+      
+      if (!info || !info.episodes) {
+        return [];
+      }
 
-    return (info.episodes || []).map(ep => ({
-      number: ep.number,
-      title: ep.title || `Episode ${ep.number}`,
-      description: "", // SKIP synopses to improve stability and performance
-      thumbnail: ep.image || ep.thumbnail || "",
-      seasonNumber: info.seasonNumber || null
-    }));
+      return (info.episodes || []).map(ep => ({
+        number: ep.number,
+        title: ep.title || `Episode ${ep.number}`,
+        description: "", // SKIP synopses to improve stability and performance
+        thumbnail: ep.image || ep.thumbnail || "",
+        seasonNumber: info.seasonNumber || null
+      }));
+    })();
+
+    const timeoutTask = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Metadata provider request timed out")), 5000)
+    );
+
+    return await Promise.race([fetchTask, timeoutTask]);
   } catch (error) {
-    if (error.message.includes("Unexpected end of JSON input") || error.message.includes("JSON")) {
-      // This happens for giant series like One Piece (ID 21) where TMDb mapping times out or fails
-      logger.warn(`[Metadata] Provider mismatch (AniList/TMDb) for ID ${anilistId}. Skipping enrichment.`);
+    if (error.message.includes("Unexpected end of JSON input") || error.message.includes("JSON") || error.message.includes("timed out")) {
+      logger.warn(`[Metadata] Provider mismatch or timeout for ID ${anilistId}. Skipping enrichment.`);
     } else {
       logger.error(`[Metadata] Failed to fetch enriched metadata: ${error.message}`);
     }
